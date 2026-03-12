@@ -103,7 +103,7 @@ pipeline {
             apiCredentialsId: '<Your Sec1 Api Key ID>',
             runSca: true,
             runSast: true,
-            tag: 'my-scan-tag',
+            scanTag: 'my-scan-tag',
             applyThreshold: true,
             actionOnThresholdBreached: 'unstable',
             threshold: [criticalThreshold: '0', highThreshold: '0', mediumThreshold: '0', lowThreshold: '0']
@@ -136,7 +136,7 @@ Whether SCA (Software Composition Analysis) scan needs to be executed for the co
 
 Whether SAST (Static Application Security Testing) scan needs to be executed for the configured git repository.
 
-#### `tag` (optional, default: *branch name*)
+#### `scanTag` (optional, default: *branch name*)
 
 A tag to identify this scan. If not provided, the branch name is used. If the branch name is also unavailable, defaults to `default`.
 

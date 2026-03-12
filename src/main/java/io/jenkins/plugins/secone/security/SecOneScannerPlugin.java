@@ -90,7 +90,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private boolean runSast;
 
-	private String tag;
+	private String scanTag;
 
 	private boolean printInAnsiColor;
 
@@ -157,13 +157,22 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.runSast = runSast;
 	}
 
-	public String getTag() {
-		return tag;
+	public String getScanTag() {
+		return scanTag;
 	}
 
 	@DataBoundSetter
+	public void setScanTag(String scanTag) {
+		this.scanTag = scanTag;
+	}
+
+	// Backward compatibility for tag
+	public String getTag() {
+		return scanTag;
+	}
+
 	public void setTag(String tag) {
-		this.tag = tag;
+		this.scanTag = tag;
 	}
 
 	// Backward compatibility
@@ -171,7 +180,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		return runSast;
 	}
 
-	@DataBoundSetter
 	public void setRunSec1SastSecurity(boolean runSec1SastSecurity) {
 		this.runSast = runSec1SastSecurity;
 	}
@@ -347,7 +355,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		} catch (Exception ex) {
 			logger.error("Error - extracting branch name for scm url : {}", scmUrl, ex);
 		}
-		String resolvedTag = StringUtils.isNotBlank(tag) ? tag : (StringUtils.isNotBlank(banchName) ? banchName : "default");
+		String resolvedTag = StringUtils.isNotBlank(scanTag) ? scanTag : (StringUtils.isNotBlank(banchName) ? banchName : "default");
 
 		int scaResult = 0;
 		int sastResult = 0;
