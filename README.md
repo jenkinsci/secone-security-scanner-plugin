@@ -4,7 +4,7 @@
 
 ## Introduction
 
-The Sec1 Security plugin provides both SCA and SAST capabilities, enabling teams to scan SCM repositories for open-source vulnerabilities and analyze code to detect security issues early in development.
+Integrates Sec1 Security scanning into your CI/CD pipeline, enabling teams to identify vulnerabilities and security issues early in the development lifecycle.
 
 ## Usage
 To use the plugin up you will need to take the following steps in order:
@@ -19,15 +19,19 @@ To use the plugin up you will need to take the following steps in order:
 - Search for "Sec1 Security Scanner" under "Available plugins".
 - Install the plugin.
 
-### Custom API Endpoints
+### Custom Endpoints
 
-By default, Sec1 uses the https://api.sec1.io endpoint. 
-It is possible to configure Sec1 to use a different endpoint by changing the `SEC1_INSTANCE_URL` environment variable:
+By default, Sec1 uses the following endpoints:
+- **API endpoint**: `https://api.sec1.io`
+- **Dashboard endpoint**: `https://unified.sec1.io`
+
+It is possible to configure custom endpoints by setting environment variables:
 
 - Go to "Manage Jenkins" > "System Configuration" -> "System"
 - Under "Global properties" check the "Environment variables" option
 - Click "Add"
-- Set the name to `SEC1_INSTANCE_URL` and the value to the custom endpoint
+- Set `SEC1_INSTANCE_URL` to override the API endpoint
+- Set `SEC1_DASHBOARD_URL` to override the dashboard endpoint (used for report URLs in build output)
 
 
 ## 2. Configure a Sec1 API Token Credential
@@ -92,21 +96,20 @@ pipeline {
         echo 'Building...'
       }
     }
-    stage('Sec1 Sca Sast Security Scan') {
-            steps {
-                script {
-                    sec1ScaSastSecurity (
-                        scanFileLocation: "${WORKSPACE}", // this is the location of you scm checkout directory. if not configured don't change it.
-                        apiCredentialsId: "<Your Sec1 Api Key ID>", 
-                        //optional
-                        runSec1SastSecurity: true,
-                        applyThreshold: true,
-                        actionOnThresholdBreached: "unstable",
-                        threshold: [criticalThreshold: '0', highThreshold: '0']
-                    )
-                }
-            }
+    stage('Sec1 Security Scan') {
+      steps {
+        script {
+          sec1Security(
+            apiCredentialsId: '<Your Sec1 Api Key ID>',
+            runSca: true,
+            runSast: true,
+            applyThreshold: true,
+            actionOnThresholdBreached: 'unstable',
+            threshold: [criticalThreshold: '0', highThreshold: '0', mediumThreshold: '0', lowThreshold: '0']
+          )
         }
+      }
+    }
     stage('Deploy') {
       steps {
         echo 'Deploying...'
@@ -118,36 +121,34 @@ pipeline {
 
 </details>
 </blockquote>
-Whether the step should fail if issues and vulnerabilities are found.
 You can pass the following parameters to your `sec1Security` step.
 
-#### `scanFileLocation` (required, default: `${WORKSPACE}`)
+#### `apiCredentialsId` (required, default: *none*)
 
-Location where scm checkout is done. Default is `${WORKSPACE}` of build job.
+Sec1 API Key Credential ID. As configured in "[2. Configure a Sec1 API Token Credential](#2-configure-a-sec1-api-token-credential)".
 
-Scan will fill if you dont provide this value.
+#### `runSca` (optional, default: `true`)
 
-#### `apiCredentialsId` (optional, default: *none*)
+Whether SCA (Software Composition Analysis) scan needs to be executed for the configured git repository.
 
-Sec1 Api Key Credential ID. As configured in "[2. Configure a Sec1 API Token Credential](#2-configure-a-sec1-api-token-credential)".
+#### `runSast` (optional, default: `true`)
 
-### `runSec1SastSecurity` (optional, default: true)
-Whether SAST scanner needs to be executed for configured git repository
+Whether SAST (Static Application Security Testing) scan needs to be executed for the configured git repository.
 
 #### `applyThreshold` (optional, default: `false`)
 
 Whether vulnerability threshold needs to be applied on the build.
 
-#### `threshold` (optional, default: `false`)
+#### `threshold` (optional, default: *none*)
 
-Threshold values for each type of vulerability. e.g. configuration:
-[criticalThreshold: '0', highThreshold: '10', mediumThreshold: '0', lowThreshold: '0']
+Threshold values for each type of vulnerability. Example configuration:
+`[criticalThreshold: '0', highThreshold: '10', mediumThreshold: '0', lowThreshold: '0']`
 
-If scan reports gives more vulnerabilities than configured threshold for the respective type of vulnerability then error will be shown in console and build status will be modified based on actionOnThresholdBreached value.
+If the scan reports more vulnerabilities than the configured threshold for the respective severity, an error will be shown in the console and the build status will be modified based on `actionOnThresholdBreached`.
 
 #### `actionOnThresholdBreached` (optional, default: `fail`)
 
-The action which needs to be taken on build if vulnerability threshold is breached. Possible values: `fail`, `unstable`, `continue`
+The action to take on the build if a vulnerability threshold is breached. Possible values: `fail`, `unstable`, `continue`
 
 ## Troubleshooting
 

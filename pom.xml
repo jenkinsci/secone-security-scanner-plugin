@@ -16,10 +16,9 @@
 	<packaging>hpi</packaging>
 
 	<name>Sec1 Security Scanner</name>
-	<description>The Sec1 Security plugin provides both SCA and SAST
-		capabilities, enabling teams to scan SCM repositories for open-source
-		vulnerabilities and analyze code to detect security issues early in
-		development.</description>
+	<description>Integrates Sec1 Security scanning into your CI/CD pipeline,
+		enabling teams to identify vulnerabilities and security issues early
+		in the development lifecycle.</description>
 	<licenses>
 		<license>
 			<name>Apache-2.0</name>

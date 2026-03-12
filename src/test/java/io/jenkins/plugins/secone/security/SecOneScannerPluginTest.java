@@ -13,16 +13,16 @@ import static org.mockito.Mockito.when;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
+
 import java.io.InputStream;
 import java.io.PrintStream;
 import java.net.URI;
-import java.net.URISyntaxException;
+
 
 import org.apache.http.StatusLine;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPost;
-import org.apache.http.entity.mime.MultipartEntityBuilder;
+
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.jenkinsci.plugins.plaincredentials.StringCredentials;
 import org.junit.After;
@@ -33,11 +33,7 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.client.RestTemplate;
+
 
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 
@@ -111,7 +107,7 @@ public class SecOneScannerPluginTest {
 	private static InputStream sampleInitiateScaScanResponseStream;
 
 	@Before
-	public void setUp() throws URISyntaxException, FileNotFoundException {
+	public void setUp() throws Exception {
 
 		WORKSPACE_DIRECTORY_LOCATION = new File("src/test/resources/test-data").getAbsolutePath();
 
@@ -122,10 +118,13 @@ public class SecOneScannerPluginTest {
 				WORKSPACE_DIRECTORY_LOCATION + "/sample-initiate-sca-scan-response.txt");
 		sampleInitiateSastScanResponseStream = new FileInputStream(
 				WORKSPACE_DIRECTORY_LOCATION + "/sample-initiate-sast-scan-response.txt");
-		plugin = new SecOneScannerPlugin("customCredentialsId", objectFactory, false);
+		plugin = new SecOneScannerPlugin("customCredentialsId");
+		// Inject mock objectFactory via reflection since it's no longer a constructor param
+		java.lang.reflect.Field factoryField = SecOneScannerPlugin.class.getDeclaredField("objectFactory");
+		factoryField.setAccessible(true);
+		factoryField.set(plugin, objectFactory);
 		when(taskListener.getLogger()).thenReturn(mock(PrintStream.class));
 		mockJenkins();
-		mock(RestTemplate.class);
 	}
 
 	@After
@@ -136,12 +135,14 @@ public class SecOneScannerPluginTest {
 
 	@Test
 	public void testScanFromUI() throws Exception {
+		plugin.setRunSast(false);
 		prepareScaScanSetup();
 		assertEquals(true, plugin.perform(abstractBuild, launcher, buildListener));
 	}
 
 	@Test
 	public void testScaScanWithThresholdMediumThreshold() throws Exception {
+		plugin.setRunSast(false);
 		plugin.setApplyThreshold(true);
 		prepareScaScanSetup();
 		// fail build if threshold breached
@@ -155,6 +156,7 @@ public class SecOneScannerPluginTest {
 
 	@Test(expected = AbortException.class)
 	public void testScaScanWithThresholdWhereStatusActionIsFail() throws Exception {
+		plugin.setRunSast(false);
 		plugin.setApplyThreshold(true);
 		prepareScaScanSetup();
 		// fail build if threshold breached
@@ -168,6 +170,7 @@ public class SecOneScannerPluginTest {
 
 	@Test
 	public void testScaScanWithThresholdWhereStatusActionIsUnstable() throws Exception {
+		plugin.setRunSast(false);
 		plugin.setApplyThreshold(true);
 		prepareScaScanSetup();
 		// fail build if threshold breached
@@ -180,6 +183,7 @@ public class SecOneScannerPluginTest {
 
 	@Test
 	public void testScaScanWithThresholdWhereStatusActionIsContinue() throws Exception {
+		plugin.setRunSast(false);
 		plugin.setApplyThreshold(true);
 		prepareScaScanSetup();
 		Threshold threshold = new Threshold("0", "10", "", "", "continue");
@@ -209,9 +213,6 @@ public class SecOneScannerPluginTest {
 
 		when(apiKeyCred.getSecret().getPlainText()).thenReturn("testApiKey");
 
-		HttpHeaders headers = new HttpHeaders();
-		headers.set("sec1-api-key", "testApiKey");
-
 		HttpPost httpPost = mock(HttpPost.class);
 
 		when(objectFactory.createHttpPost(anyString())).thenReturn(httpPost);
@@ -238,7 +239,7 @@ public class SecOneScannerPluginTest {
 
 	@Test
 	public void testScaSastScanWithThresholdMediumThreshold() throws Exception {
-		plugin.setRunSec1SastSecurity(true);
+		plugin.setRunSast(true);
 		plugin.setApplyThreshold(true);
 		prepareScaSastScanSetup();
 		// fail build if threshold breached
@@ -252,7 +253,7 @@ public class SecOneScannerPluginTest {
 
 	@Test(expected = AbortException.class)
 	public void testScaSastScanWithThresholdWhereStatusActionIsFail() throws Exception {
-		plugin.setRunSec1SastSecurity(true);
+		plugin.setRunSast(true);
 		plugin.setApplyThreshold(true);
 		prepareScaSastScanSetup();
 		// fail build if threshold breached
@@ -266,7 +267,7 @@ public class SecOneScannerPluginTest {
 
 	@Test
 	public void testScaSastScanWithThresholdWhereStatusActionIsUnstable() throws Exception {
-		plugin.setRunSec1SastSecurity(true);
+		plugin.setRunSast(true);
 		plugin.setApplyThreshold(true);
 		prepareScaSastScanSetup();
 		// fail build if threshold breached
@@ -279,7 +280,7 @@ public class SecOneScannerPluginTest {
 
 	@Test
 	public void testScaSastScanWithThresholdWhereStatusActionIsContinue() throws Exception {
-		plugin.setRunSec1SastSecurity(true);
+		plugin.setRunSast(true);
 		plugin.setApplyThreshold(true);
 		prepareScaSastScanSetup();
 		// fail build if threshold breached
@@ -309,9 +310,6 @@ public class SecOneScannerPluginTest {
 		when(apiKeyCred.getSecret()).thenReturn(mysecret);
 
 		when(apiKeyCred.getSecret().getPlainText()).thenReturn("testApiKey");
-
-		HttpHeaders headers = new HttpHeaders();
-		headers.set("sec1-api-key", "testApiKey");
 
 		HttpPost httpPost = mock(HttpPost.class);
 

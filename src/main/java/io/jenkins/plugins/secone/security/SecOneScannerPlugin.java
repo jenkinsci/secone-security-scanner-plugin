@@ -69,6 +69,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private static final String INSTANCE_URL = "SEC1_INSTANCE_URL";
 
+	private static final String DASHBOARD_URL = "SEC1_DASHBOARD_URL";
+
 	private static final String SAST_SCAN_API = "/foss/sast/ascan";
 
 	private static final String SAST_STATUS_CHECK_URL = "/sast/asset/report/status";
@@ -84,20 +86,20 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private Threshold threshold;
 
-	private boolean runSec1SastSecurity;
+	private boolean runSca;
+
+	private boolean runSast;
 
 	private boolean printInAnsiColor;
 
 	private ObjectFactory objectFactory;
 
 	@DataBoundConstructor
-	public SecOneScannerPlugin(String apiCredentialsId, ObjectFactory objectFactory, boolean runSec1SastSecurity) {
+	public SecOneScannerPlugin(String apiCredentialsId) {
 		this.apiCredentialsId = apiCredentialsId;
-		if (objectFactory == null) {
-			objectFactory = new ObjectFactory();
-		}
-		this.objectFactory = objectFactory;
-		this.runSec1SastSecurity = runSec1SastSecurity;
+		this.objectFactory = new ObjectFactory();
+		this.runSca = true;
+		this.runSast = true;
 	}
 
 	public String getApiCredentialsId() {
@@ -135,13 +137,32 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.actionOnThresholdBreached = actionOnThresholdBreached;
 	}
 
+	public boolean isRunSca() {
+		return runSca;
+	}
+
+	@DataBoundSetter
+	public void setRunSca(boolean runSca) {
+		this.runSca = runSca;
+	}
+
+	public boolean isRunSast() {
+		return runSast;
+	}
+
+	@DataBoundSetter
+	public void setRunSast(boolean runSast) {
+		this.runSast = runSast;
+	}
+
+	// Backward compatibility
 	public boolean isRunSec1SastSecurity() {
-		return runSec1SastSecurity;
+		return runSast;
 	}
 
 	@DataBoundSetter
 	public void setRunSec1SastSecurity(boolean runSec1SastSecurity) {
-		this.runSec1SastSecurity = runSec1SastSecurity;
+		this.runSast = runSec1SastSecurity;
 	}
 
 	// from UI
@@ -157,7 +178,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		}
 		printInAnsiColor = isAnsiColorPluginInstalled(build.getParent());
 		String workingDirectory = getGitWorkingDirectory(build.getEnvironment(listener), listener);
-		int result = performScan(build, listener, applyThreshold, workingDirectory, runSec1SastSecurity);
+		int result = performScan(build, listener, applyThreshold, workingDirectory);
 		if (result != 0) {
 			build.setResult(Result.UNSTABLE);
 		}
@@ -165,19 +186,19 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	}
 
 	private void printScaStartMessage(TaskListener listener) {
-		printLogs(listener.getLogger(), "**************Sec1 SCA scan start**************", "g");
+		printLogs(listener.getLogger(), "=============== Sec1 SCA Scan Start ===============", "g");
 	}
 
 	private void printScaEndMessage(TaskListener listener) {
-		printLogs(listener.getLogger(), "**************Sec1 SCA scan end**************", "g");
+		printLogs(listener.getLogger(), "=============== Sec1 SCA Scan End ===============", "g");
 	}
 
 	private void printSastStartMessage(TaskListener listener) {
-		printLogs(listener.getLogger(), "**************Sec1 SAST Security scan start**************", "g");
+		printLogs(listener.getLogger(), "=============== Sec1 SAST Scan Start ===============", "g");
 	}
 
 	private void printSastEndMessage(TaskListener listener) {
-		printLogs(listener.getLogger(), "**************Sec1 SAST Security scan end**************", "g");
+		printLogs(listener.getLogger(), "=============== Sec1 SAST Scan End ===============", "g");
 	}
 
 	private String getInstanceUrl(EnvVars envVars, TaskListener listener) {
@@ -190,6 +211,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		// .println("No environment variable SEC1_INSTANCE_URL set. Using default :
 		// https://api.sec1.io");
 		return "https://api.sec1.io";
+	}
+
+	private String getDashboardUrl(EnvVars envVars, TaskListener listener) {
+		String dashboardUrl = envVars.get(DASHBOARD_URL);
+		if (StringUtils.isNotBlank(dashboardUrl)) {
+			listener.getLogger().println("SEC1_DASHBOARD_URL : " + dashboardUrl);
+			return dashboardUrl;
+		}
+		return "https://unified.sec1.io";
 	}
 
 	// From script
@@ -215,7 +245,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			}
 		}
 
-		int result = performScan(run, listener, applyThreshold, workingDirectory, runSec1SastSecurity);
+		int result = performScan(run, listener, applyThreshold, workingDirectory);
 		if (result != 0) {
 			run.setResult(Result.UNSTABLE);
 		}
@@ -223,14 +253,13 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	public String getApiKey(Run<?, ?> run, TaskListener listener) {
 		if (StringUtils.isNotBlank(apiCredentialsId)) {
-			printLogs(listener.getLogger(), "Finding api key for credendials id : " + apiCredentialsId, "g");
+			printLogs(listener.getLogger(), "Resolving API key from configured credentials.", "g");
 
 			StringCredentials apiKeyCreds = CredentialsProvider.findCredentialById(apiCredentialsId,
 					StringCredentials.class, run, Collections.emptyList());
 
 			if (apiKeyCreds == null) {
-				printLogs(listener.getLogger(), "Credentials id not found : " + apiCredentialsId, "g");
-				printLogs(listener.getLogger(), "Finding api key for default credendials id : " + API_KEY, "g");
+				printLogs(listener.getLogger(), "Configured credentials not found. Trying default credentials.", "g");
 				apiKeyCreds = CredentialsProvider.findCredentialById(API_KEY, StringCredentials.class, run,
 						Collections.emptyList());
 			}
@@ -239,8 +268,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				return apiKey;
 			}
 		} else {
-			printLogs(listener.getLogger(), "No Credentials Id confgured, using default credendials id : " + API_KEY,
-					"g");
+			printLogs(listener.getLogger(), "No credentials ID configured. Using default credentials.", "g");
 			StringCredentials apiKeyCreds = CredentialsProvider.findCredentialById(API_KEY, StringCredentials.class,
 					run, Collections.emptyList());
 			if (apiKeyCreds != null) {
@@ -257,8 +285,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		return true;
 	}
 
-	private int performScan(Run<?, ?> run, TaskListener listener, boolean applyThreshold, String workingDirectory,
-			boolean runSec1SastSecurity) throws AbortException {
+	private int performScan(Run<?, ?> run, TaskListener listener, boolean applyThreshold, String workingDirectory)
+			throws AbortException {
 
 		String sec1ApiKey = getApiKey(run, listener);
 
@@ -269,8 +297,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		StringBuilder fossInstanceUrl = new StringBuilder();
 		StringBuilder scmUrl = new StringBuilder();
 
+		String dashboardUrl = null;
 		try {
-			fossInstanceUrl.append(getInstanceUrl(run.getEnvironment(listener), listener));
+			EnvVars envVars = run.getEnvironment(listener);
+			fossInstanceUrl.append(getInstanceUrl(envVars, listener));
+			dashboardUrl = getDashboardUrl(envVars, listener);
 		} catch (IOException | InterruptedException e) {
 			throw new AbortException(getErrorMessageInAnsi("Exception while getting environment variables."));
 		}
@@ -305,25 +336,52 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		} catch (Exception ex) {
 			logger.error("Error - extracting branch name for scm url : {}", scmUrl, ex);
 		}
-		int result = 0;
-		result = runScaScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
-				runSec1SastSecurity, banchName);
+		int scaResult = 0;
+		int sastResult = 0;
+		AbortException scaAbortException = null;
 
-		if (runSec1SastSecurity) {
+		if (runSca) {
 			try {
-				result = runSastScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
-						banchName);
-			} catch (InterruptedException ex) {
-				printLogs(listener.getLogger(), "Error while running sast scan. Failed to wait for result.", "r");
+				scaResult = runScaScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
+						banchName, dashboardUrl);
+			} catch (AbortException ex) {
+				if (runSast) {
+					// Save exception to re-throw after SAST scan completes
+					printLogs(listener.getLogger(), "SCA scan failed: " + ex.getMessage(), "r");
+					scaResult = -1;
+					scaAbortException = ex;
+				} else {
+					throw ex;
+				}
 			}
 		}
 
-		return result;
+		if (runSast) {
+			try {
+				sastResult = runSastScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
+						banchName, dashboardUrl);
+			} catch (InterruptedException ex) {
+				printLogs(listener.getLogger(), "Error while running sast scan. Failed to wait for result.", "r");
+				sastResult = -1;
+			}
+		}
+
+		if (!runSca && !runSast) {
+			printLogs(listener.getLogger(), "No scan type selected. Enable at least one of runSca or runSast.", "r");
+		}
+
+		// If SCA had a fatal failure, re-throw after SAST has completed
+		if (scaAbortException != null) {
+			throw scaAbortException;
+		}
+
+		// Return the worst result from both scans
+		return Math.max(scaResult, sastResult);
 	}
 
 	private int runSastScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
-			String workingDirectory, StringBuilder scmUrl, StringBuilder appName, String branchName)
-			throws AbortException, InterruptedException {
+			String workingDirectory, StringBuilder scmUrl, StringBuilder appName, String branchName,
+			String dashboardUrl) throws AbortException, InterruptedException {
 		printSastStartMessage(listener);
 		int result = 0;
 
@@ -342,18 +400,18 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		inputParamsMap.put("scanRequestList", inputParams);
 
-		listener.getLogger().println("==================== SEC1 SAST SCAN CONFIG ====================");
+		listener.getLogger().println("-------------------- Sec1 SAST Scan Config --------------------");
 		listener.getLogger().println("SCM Url                " + scmUrl);
-		listener.getLogger().println("Threshold Enabled      " + applyThreshold);
+		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
 		if (threshold != null && applyThreshold) {
-			listener.getLogger().println("Threshold Values       " + "Critical "
+			listener.getLogger().println("Threshold Values       Critical: "
 					+ (StringUtils.isNotBlank(threshold.getCriticalThreshold()) ? threshold.getCriticalThreshold()
 							: "NA")
-					+ "," + " High "
-					+ (StringUtils.isNotBlank(threshold.getHighThreshold()) ? threshold.getHighThreshold() : "NA") + ","
-					+ " Medium "
+					+ ", High: "
+					+ (StringUtils.isNotBlank(threshold.getHighThreshold()) ? threshold.getHighThreshold() : "NA")
+					+ ", Medium: "
 					+ (StringUtils.isNotBlank(threshold.getMediumThreshold()) ? threshold.getMediumThreshold() : "NA")
-					+ "," + " Low "
+					+ ", Low: "
 					+ (StringUtils.isNotBlank(threshold.getLowThreshold()) ? threshold.getLowThreshold() : "NA"));
 		}
 		String scanUrl = fossInstanceUrl + API_CONTEXT + SAST_SCAN_API;
@@ -391,13 +449,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 						while (!StringUtils.equalsIgnoreCase("COMPLETED", scanStatus)) {
 							if (System.currentTimeMillis() - startTime > maxDuration) {
-								listener.getLogger().println("Sec1 SAST Security Scanner Report:");
-								listener.getLogger().println("Report ID: " + reportId);
-								listener.getLogger().println(
-										"Report URL: https://scopy.sec1.io/sast-advance-dashboard/" + reportId);
-								listener.getLogger().println("Status: FAILURE");
+								listener.getLogger().println("-------------------- Sec1 SAST Scan Result --------------------");
+								listener.getLogger().println("Report Url             " + dashboardUrl + "/sast-advance-dashboard/" + reportId);
+								listener.getLogger().println("Status                 TIMED OUT");
 								throw new AbortException(
-										getErrorMessageInAnsi("Sec1 SAST Security Scan timed out after 10 minutes"));
+										getErrorMessageInAnsi("Sec1 SAST Scan timed out after 10 minutes."));
 							}
 
 							// Sleep for 10 seconds before polling again
@@ -423,14 +479,12 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 							}
 
 							if (StringUtils.equalsIgnoreCase("SCANNING", scanStatus)) {
-								listener.getLogger().println("SAST Scan is still in progress...");
+								listener.getLogger().println("Sec1 SAST Scan in progress...");
 							} else if (scanStatus.equals("FAILED")) {
 								listener.getLogger()
-										.println("==================== SEC1 SAST SCAN RESULT ====================");
-								// listener.getLogger().println("Sec1 SAST Security Scanner Report:");
+										.println("-------------------- Sec1 SAST Scan Result --------------------");
 								listener.getLogger().println("Report Url             "
-										+ "Report URL: https://scopy.sec1.io/sast-advance-dashboard/" + reportId);
-								listener.getLogger().println();
+										+ dashboardUrl + "/sast-advance-dashboard/" + reportId);
 								listener.getLogger().println("Status                 FAILURE");
 								throw new AbortException(
 										getErrorMessageInAnsi("Sec1 SAST Security Scan Finished with failures"));
@@ -444,38 +498,36 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 							int low = responseJson.optInt("low");
 
 							listener.getLogger()
-									.println("==================== SEC1 SAST SCAN RESULT ====================");
+									.println("-------------------- Sec1 SAST Scan Result --------------------");
 							if (StringUtils.isBlank(responseJson.optString("errorMessage"))) {
-								String reportUrl = "https://scopy.sec1.io/sast-advance-dashboard/" + reportId;
-								listener.getLogger().println("Vulnerabilities Found  " + "Critical " + critical + ","
-										+ " High " + high + "," + " Medium " + medium + "," + " Low " + low);
+								String reportUrl = dashboardUrl + "/sast-advance-dashboard/" + reportId;
+								listener.getLogger().println("Vulnerabilities        Critical: " + critical
+										+ ", High: " + high + ", Medium: " + medium + ", Low: " + low);
 								listener.getLogger().println("Report Url             " + reportUrl);
-
-								// listener.getLogger().println("=====================================================");
 
 								if (applyThreshold) {
 									if (critical != 0 && threshold.getCriticalThreshold() != null
 											&& NumberUtils.isDigits(threshold.getCriticalThreshold())
 											&& critical >= Integer.parseInt(threshold.getCriticalThreshold())) {
-										String message = "Critical Vulnerability Threshold breached.";
+										String message = "Critical Vulnerability Threshold breached. Found: " + critical + ", Allowed: " + threshold.getCriticalThreshold();
 										result = failBuildOnThresholdBreach(message, listener, threshold);
 									}
 									if (high != 0 && threshold.getHighThreshold() != null
 											&& NumberUtils.isDigits(threshold.getHighThreshold())
 											&& high >= Integer.parseInt(threshold.getHighThreshold())) {
-										String message = "High Vulnerability Threshold breached.";
+										String message = "High Vulnerability Threshold breached. Found: " + high + ", Allowed: " + threshold.getHighThreshold();
 										result = failBuildOnThresholdBreach(message, listener, threshold);
 									}
 									if (medium != 0 && threshold.getMediumThreshold() != null
 											&& NumberUtils.isDigits(threshold.getMediumThreshold())
 											&& medium >= Integer.parseInt(threshold.getMediumThreshold())) {
-										String message = "Medium Vulnerability Threshold breached.";
+										String message = "Medium Vulnerability Threshold breached. Found: " + medium + ", Allowed: " + threshold.getMediumThreshold();
 										result = failBuildOnThresholdBreach(message, listener, threshold);
 									}
 									if (low != 0 && threshold.getLowThreshold() != null
 											&& NumberUtils.isDigits(threshold.getLowThreshold())
 											&& low >= Integer.parseInt(threshold.getLowThreshold())) {
-										String message = "Low Vulnerability Threshold breached.";
+										String message = "Low Vulnerability Threshold breached. Found: " + low + ", Allowed: " + threshold.getLowThreshold();
 										result = failBuildOnThresholdBreach(message, listener, threshold);
 									}
 								}
@@ -555,8 +607,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	}
 
 	private int runScaScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
-			String workingDirectory, StringBuilder scmUrl, StringBuilder appName, boolean runSec1SastSecurity,
-			String branchName) throws AbortException {
+			String workingDirectory, StringBuilder scmUrl, StringBuilder appName,
+			String branchName, String dashboardUrl) throws AbortException {
 
 		printScaStartMessage(listener);
 
@@ -577,18 +629,18 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		scanRequestList.put(inputParamsMap);
 		rquestJson.put("scanRequestList", scanRequestList);
 
-		listener.getLogger().println("==================== SEC1 SCA SCAN CONFIG ====================");
+		listener.getLogger().println("-------------------- Sec1 SCA Scan Config --------------------");
 		listener.getLogger().println("SCM Url                " + scmUrl);
-		listener.getLogger().println("Threshold Enabled      " + applyThreshold);
+		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
 		if (threshold != null && applyThreshold) {
-			listener.getLogger().println("Threshold Values       " + "Critical "
+			listener.getLogger().println("Threshold Values       Critical: "
 					+ (StringUtils.isNotBlank(threshold.getCriticalThreshold()) ? threshold.getCriticalThreshold()
 							: "NA")
-					+ "," + " High "
-					+ (StringUtils.isNotBlank(threshold.getHighThreshold()) ? threshold.getHighThreshold() : "NA") + ","
-					+ " Medium "
+					+ ", High: "
+					+ (StringUtils.isNotBlank(threshold.getHighThreshold()) ? threshold.getHighThreshold() : "NA")
+					+ ", Medium: "
 					+ (StringUtils.isNotBlank(threshold.getMediumThreshold()) ? threshold.getMediumThreshold() : "NA")
-					+ "," + " Low "
+					+ ", Low: "
 					+ (StringUtils.isNotBlank(threshold.getLowThreshold()) ? threshold.getLowThreshold() : "NA"));
 		}
 
@@ -623,14 +675,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 						JSONObject responseJson = null;
 						while (!StringUtils.equalsIgnoreCase("COMPLETED", scanStatus)) {
 							if (System.currentTimeMillis() - startTime > maxDuration) {
-								listener.getLogger().println("Sec1 SCA Security Scanner Report:");
-								listener.getLogger().println("Report ID              " + reportId);
-								listener.getLogger()
-										.println("Report Url           https://scopy.sec1.io/dashboard-scan-details/"
-												+ reportId);
-								listener.getLogger().println("Status                 FAILURE");
+								listener.getLogger().println("-------------------- Sec1 SCA Scan Result --------------------");
+								listener.getLogger().println("Report Url             " + dashboardUrl + "/dashboard-scan-details/" + reportId);
+								listener.getLogger().println("Status                 TIMED OUT");
 								throw new AbortException(
-										getErrorMessageInAnsi("Sec1 SCA Security Scan timed out after 10 minutes"));
+										getErrorMessageInAnsi("Sec1 SCA Scan timed out after 10 minutes."));
 							}
 
 							// Sleep for 10 seconds before polling again
@@ -654,12 +703,12 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 							scanStatus = responseJson.getJSONObject(reportId).getString("status");
 							if (!StringUtils.equalsIgnoreCase("FAILED", scanStatus)
 									&& !StringUtils.equalsIgnoreCase("COMPLETED", scanStatus)) {
-								listener.getLogger().println("SCA Scan is still in progress...");
+								listener.getLogger().println("Sec1 SCA Scan in progress...");
 							} else if (scanStatus.equals("FAILED")) {
 								JSONObject scanResult = responseJson.getJSONObject(reportId)
 										.optJSONObject("scannerResponseEntity");
 								listener.getLogger()
-										.println("==================== SEC1 SCA SCAN RESULT ====================");
+										.println("-------------------- Sec1 SCA Scan Result --------------------");
 								if (scanResult != null) {
 									listener.getLogger()
 											.println("Report Url             " + scanResult.optString("reportUrl"));
@@ -687,12 +736,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 										: 0;
 
 								listener.getLogger()
-										.println("==================== SEC1 SCA SCAN RESULT ====================");
+										.println("-------------------- Sec1 SCA Scan Result --------------------");
 								if (StringUtils.isBlank(scanResult.optString("errorMessage"))) {
-									listener.getLogger().println("Vulnerabilities Found  " + "Critical " + critical
-											+ "," + " High " + high + "," + " Medium " + medium + "," + " Low " + low);
-									listener.getLogger().println(
-											"RAG Status             " + scanResult.optString("overallRagStatus"));
+									listener.getLogger().println("Vulnerabilities        Critical: " + critical
+											+ ", High: " + high + ", Medium: " + medium + ", Low: " + low);
+									listener.getLogger().println("Status                 " + scanResult.optString("overallRagStatus").toUpperCase());
 									listener.getLogger()
 											.println("Report Url             " + scanResult.optString("reportUrl"));
 
@@ -701,36 +749,30 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 											if (critical != 0 && threshold.getCriticalThreshold() != null
 													&& NumberUtils.isDigits(threshold.getCriticalThreshold())
 													&& critical >= Integer.parseInt(threshold.getCriticalThreshold())) {
-												String message = "Critical Vulnerability Threshold breached.";
+												String message = "Critical Vulnerability Threshold breached. Found: " + critical + ", Allowed: " + threshold.getCriticalThreshold();
 												result = failBuildOnThresholdBreach(message, listener, threshold);
 											}
 											if (high != 0 && threshold.getHighThreshold() != null
 													&& NumberUtils.isDigits(threshold.getHighThreshold())
 													&& high >= Integer.parseInt(threshold.getHighThreshold())) {
-												String message = "High Vulnerability Threshold breached.";
+												String message = "High Vulnerability Threshold breached. Found: " + high + ", Allowed: " + threshold.getHighThreshold();
 												result = failBuildOnThresholdBreach(message, listener, threshold);
 											}
 											if (medium != 0 && threshold.getMediumThreshold() != null
 													&& NumberUtils.isDigits(threshold.getMediumThreshold())
 													&& medium >= Integer.parseInt(threshold.getMediumThreshold())) {
-												String message = "Medium Vulnerability Threshold breached.";
+												String message = "Medium Vulnerability Threshold breached. Found: " + medium + ", Allowed: " + threshold.getMediumThreshold();
 												result = failBuildOnThresholdBreach(message, listener, threshold);
 											}
 											if (low != 0 && threshold.getLowThreshold() != null
 													&& NumberUtils.isDigits(threshold.getLowThreshold())
 													&& low >= Integer.parseInt(threshold.getLowThreshold())) {
-												String message = "Low Vulnerability Threshold breached.";
+												String message = "Low Vulnerability Threshold breached. Found: " + low + ", Allowed: " + threshold.getLowThreshold();
 												result = failBuildOnThresholdBreach(message, listener, threshold);
 											}
 										} catch (AbortException ex) {
-											if (!runSec1SastSecurity) {
-												throw new AbortException(getErrorMessageInAnsi(
-														"Attention: Build Failed because of vulnerability threshold level breached for sca."));
-											} else {
-												printLogs(listener.getLogger(),
-														"Attention: Build Failed because of vulnerability threshold level breached for sca.",
-														"r");
-											}
+											throw new AbortException(getErrorMessageInAnsi(
+													"Attention: Build Failed because of vulnerability threshold level breached for sca."));
 										}
 									}
 								} else {
@@ -741,23 +783,13 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 							}
 						} else {
 							logger.info("Invalid content recevied");
-							if (!runSec1SastSecurity) {
-								throw new AbortException(getErrorMessageInAnsi(
-										"Error while processing scan result. Failing the build."));
-							} else {
-								printLogs(listener.getLogger(),
-										"Error while processing scan result. Failing the build.", "r");
-							}
+							throw new AbortException(getErrorMessageInAnsi(
+									"Error while processing scan result. Failing the build."));
 						}
 					} else {
 						logger.info("Invalid content recevied");
-						if (!runSec1SastSecurity) {
-							throw new AbortException(
-									getErrorMessageInAnsi("Error while processing scan result. Failing the build."));
-						} else {
-							printLogs(listener.getLogger(), "Error while processing scan result. Failing the build.",
-									"r");
-						}
+						throw new AbortException(
+								getErrorMessageInAnsi("Error while processing scan result. Failing the build."));
 					}
 				}
 			} catch (AbortException ex) {
@@ -776,12 +808,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				throw new AbortException(getErrorMessageInAnsi("401 Unauthorized. Check your api key."));
 			}
 			logger.error("Issue while getting response from system.");
-			if (!runSec1SastSecurity) {
-				throw new AbortException(
-						getErrorMessageInAnsi("Error while processing sca scan result. Failing the build."));
-			} else {
-				printLogs(listener.getLogger(), "Error while processing sca scan result. Failing the build.", "r");
-			}
+			throw new AbortException(
+					getErrorMessageInAnsi("Error while processing sca scan result. Failing the build."));
 		}
 		printScaEndMessage(listener);
 		return result;
@@ -833,11 +861,10 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		return 0;
 	}
 
-	@Symbol("sec1ScaSastSecurity")
+	@Symbol({"sec1Security", "sec1ScaSastSecurity"})
 	@Extension
 	public static final class DescriptorImpl extends BuildStepDescriptor<Builder> {
 
-		@DataBoundConstructor
 		public DescriptorImpl() {
 			super(SecOneScannerPlugin.class);
 		}
@@ -849,7 +876,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		@Override
 		public String getDisplayName() {
-			return "Execute Sec1 Sca Sast Security Scan";
+			return "Execute Sec1 Security Scan";
 		}
 	}
 

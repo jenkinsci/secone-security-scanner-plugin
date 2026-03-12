@@ -1,4 +1,4 @@
 <?jelly escape-by-default='true'?>
 <div>
-Provides both Software Composition Analysis (SCA) and Static Application Security Testing (SAST) capabilities, enabling teams to scan SCM repositories for open-source vulnerabilities and analyze code for security issues early in development.
+Integrates Sec1 Security scanning into your CI/CD pipeline, enabling teams to identify vulnerabilities and security issues early in the development lifecycle.
 </div>

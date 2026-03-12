@@ -2,13 +2,16 @@
 <j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" xmlns:l="/lib/layout" xmlns:t="/lib/hudson" xmlns:f="/lib/form" xmlns:c="/lib/credentials">
 
 	<f:entry>
-		<b>The Sec1 Security plugin provides both SCA and SAST capabilities, enabling teams to scan SCM repositories for open-source vulnerabilities and analyze code to detect security issues early in development.</b>
+		<b>Integrates Sec1 Security scanning into your CI/CD pipeline, enabling teams to identify vulnerabilities and security issues early in the development lifecycle.</b>
 	</f:entry>
 	<f:entry title="Credentials Id" field="apiCredentialsId">
         <f:textbox />
     </f:entry>
-    <f:entry title="Run Sec1 SAST Security Scan" field="runSec1SastSecurity">
-    	<f:checkbox checked="${instance == null || instance.runSec1SastSecurity}"/>
+    <f:entry title="Run SCA Scan" field="runSca">
+    	<f:checkbox checked="${instance == null || instance.runSca}"/>
+	</f:entry>
+    <f:entry title="Run SAST Scan" field="runSast">
+    	<f:checkbox checked="${instance == null || instance.runSast}"/>
 	</f:entry>
 	<f:optionalBlock title="${%thresholdTitle}" field="threshold" checked="${instance.threshold != null}">
         <f:block>
