@@ -569,10 +569,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				}
 			} catch (AbortException ex) {
 				printSastEndMessage(listener);
-				throw new AbortException(getErrorMessageInAnsi(
-						"Attention: Build Failed because of vulnerability threshold level breached for sast."));
+				throw ex;
 			} catch (IOException ex) {
-				throw new AbortException(getErrorMessageInAnsi("Attention: Build Failed. Check configuration."));
+				logger.error("SAST scan failed with IOException", ex);
+				printSastEndMessage(listener);
+				throw new AbortException(getErrorMessageInAnsi("Attention: Build Failed. Check configuration. " + ex.getMessage()));
 			} catch (URISyntaxException e) {
 				throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
 			}
