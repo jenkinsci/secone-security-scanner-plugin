@@ -11,7 +11,7 @@
 	</parent>
 
 	<groupId>io.jenkins.plugins</groupId>
-	<artifactId>secone-sca-sast-security-scanner</artifactId>
+	<artifactId>secone-security-scanner</artifactId>
 	<version>${changelist}</version>
 	<packaging>hpi</packaging>
 
@@ -39,7 +39,7 @@
 	<properties>
 		<jenkins.version>2.462.1</jenkins.version>
 		<changelist>999999-SNAPSHOT</changelist>
-		<gitHubRepo>jenkinsci/secone-sca-sast-security-scanner-plugin</gitHubRepo>
+		<gitHubRepo>jenkinsci/secone-security-scanner-plugin</gitHubRepo>
 	</properties>
 
 	<dependencyManagement>

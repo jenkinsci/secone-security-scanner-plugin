@@ -14,7 +14,7 @@ This project and everyone participating in it is governed by the [Jenkins Code o
 
 ### Sec1 Security and Jenkins
 
-- If you're not yet familiar with Jenkins or Sec1 Security, read up on the [Jenkins documentation](https://www.jenkins.io/doc/) and the [plugin's documentation](https://plugins.jenkins.io/secone-sca-sast-security-scanner/).
+- If you're not yet familiar with Jenkins or Sec1 Security, read up on the [Jenkins documentation](https://www.jenkins.io/doc/) and the [plugin's documentation](https://plugins.jenkins.io/secone-security-scanner/).
 
 ### Plugin Development
 
@@ -104,7 +104,7 @@ This section lists the labels we use to help us track and manage issues and pull
 
 ## Getting Help
 
-If you have a question about Sec1 Security, or need help using it, please start by checking the [documentation](https://plugins.jenkins.io/secone-sca-sast-security-scanner/). If you can't find the answer there, you can ask for help by dropping a note to security@sec1.io.
+If you have a question about Sec1 Security, or need help using it, please start by checking the [documentation](https://plugins.jenkins.io/secone-security-scanner/). If you can't find the answer there, you can ask for help by dropping a note to security@sec1.io.
 
 ---
 
