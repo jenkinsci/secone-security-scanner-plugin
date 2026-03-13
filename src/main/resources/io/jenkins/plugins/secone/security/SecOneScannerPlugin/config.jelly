@@ -13,6 +13,9 @@
     <f:entry title="Run SAST Scan" field="runSast">
     	<f:checkbox checked="${instance == null || instance.runSast}"/>
 	</f:entry>
+	<f:entry title="Scan Tag" field="scanTag">
+		<f:textbox default="" />
+	</f:entry>
 	<f:optionalBlock title="${%thresholdTitle}" field="threshold" checked="${instance.threshold != null}">
         <f:block>
             <table style="padding-left:2%; width:100%;">

@@ -90,6 +90,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private boolean runSast;
 
+	private String scanTag;
+
 	private boolean printInAnsiColor;
 
 	private ObjectFactory objectFactory;
@@ -155,12 +157,29 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.runSast = runSast;
 	}
 
+	public String getScanTag() {
+		return scanTag;
+	}
+
+	@DataBoundSetter
+	public void setScanTag(String scanTag) {
+		this.scanTag = scanTag;
+	}
+
+	// Backward compatibility for tag
+	public String getTag() {
+		return scanTag;
+	}
+
+	public void setTag(String tag) {
+		this.scanTag = tag;
+	}
+
 	// Backward compatibility
 	public boolean isRunSec1SastSecurity() {
 		return runSast;
 	}
 
-	@DataBoundSetter
 	public void setRunSec1SastSecurity(boolean runSec1SastSecurity) {
 		this.runSast = runSec1SastSecurity;
 	}
@@ -336,6 +355,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		} catch (Exception ex) {
 			logger.error("Error - extracting branch name for scm url : {}", scmUrl, ex);
 		}
+		String resolvedTag = StringUtils.isNotBlank(scanTag) ? scanTag : (StringUtils.isNotBlank(banchName) ? banchName : "default");
+
 		int scaResult = 0;
 		int sastResult = 0;
 		AbortException scaAbortException = null;
@@ -343,7 +364,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		if (runSca) {
 			try {
 				scaResult = runScaScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
-						banchName, dashboardUrl);
+						banchName, dashboardUrl, resolvedTag);
 			} catch (AbortException ex) {
 				if (runSast) {
 					// Save exception to re-throw after SAST scan completes
@@ -359,7 +380,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		if (runSast) {
 			try {
 				sastResult = runSastScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
-						banchName, dashboardUrl);
+						banchName, dashboardUrl, resolvedTag);
 			} catch (InterruptedException ex) {
 				printLogs(listener.getLogger(), "Error while running sast scan. Failed to wait for result.", "r");
 				sastResult = -1;
@@ -381,7 +402,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private int runSastScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
 			String workingDirectory, StringBuilder scmUrl, StringBuilder appName, String branchName,
-			String dashboardUrl) throws AbortException, InterruptedException {
+			String dashboardUrl, String resolvedTag) throws AbortException, InterruptedException {
 		printSastStartMessage(listener);
 		int result = 0;
 
@@ -394,6 +415,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		requestJson.put("appName", appName);
 		requestJson.put("source", "jenkins");
+		requestJson.put("tag", resolvedTag);
 
 		JSONArray inputParams = new JSONArray();
 		inputParams.put(requestJson);
@@ -402,6 +424,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		listener.getLogger().println("-------------------- Sec1 SAST Scan Config --------------------");
 		listener.getLogger().println("SCM Url                " + scmUrl);
+		listener.getLogger().println("Tag                    " + resolvedTag);
 		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
 		if (threshold != null && applyThreshold) {
 			listener.getLogger().println("Threshold Values       Critical: "
@@ -546,10 +569,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				}
 			} catch (AbortException ex) {
 				printSastEndMessage(listener);
-				throw new AbortException(getErrorMessageInAnsi(
-						"Attention: Build Failed because of vulnerability threshold level breached for sast."));
+				throw ex;
 			} catch (IOException ex) {
-				throw new AbortException(getErrorMessageInAnsi("Attention: Build Failed. Check configuration."));
+				logger.error("SAST scan failed with IOException", ex);
+				printSastEndMessage(listener);
+				throw new AbortException(getErrorMessageInAnsi("Attention: Build Failed. Check configuration. " + ex.getMessage()));
 			} catch (URISyntaxException e) {
 				throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
 			}
@@ -608,7 +632,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private int runScaScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
 			String workingDirectory, StringBuilder scmUrl, StringBuilder appName,
-			String branchName, String dashboardUrl) throws AbortException {
+			String branchName, String dashboardUrl, String resolvedTag) throws AbortException {
 
 		printScaStartMessage(listener);
 
@@ -622,6 +646,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		inputParamsMap.put("location", scmUrl);
 		inputParamsMap.put("appName", appName);
 		inputParamsMap.put("source", "jenkins");
+		inputParamsMap.put("tag", resolvedTag);
 		if (StringUtils.isNotBlank(branchName)) {
 			inputParamsMap.put("branchName", getSanitizedBranchName(branchName));
 		}
@@ -631,6 +656,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		listener.getLogger().println("-------------------- Sec1 SCA Scan Config --------------------");
 		listener.getLogger().println("SCM Url                " + scmUrl);
+		listener.getLogger().println("Tag                    " + resolvedTag);
 		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
 		if (threshold != null && applyThreshold) {
 			listener.getLogger().println("Threshold Values       Critical: "

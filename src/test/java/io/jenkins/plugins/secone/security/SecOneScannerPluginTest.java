@@ -1,8 +1,8 @@
 package io.jenkins.plugins.secone.security;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -13,27 +13,25 @@ import static org.mockito.Mockito.when;
 
 import java.io.File;
 import java.io.FileInputStream;
-
 import java.io.InputStream;
 import java.io.PrintStream;
 import java.net.URI;
 
-
 import org.apache.http.StatusLine;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPost;
-
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.jenkinsci.plugins.plaincredentials.StringCredentials;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
-import org.mockito.junit.MockitoJUnitRunner;
-
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 
@@ -50,7 +48,8 @@ import io.jenkins.plugins.secone.security.object.factory.ObjectFactory;
 import io.jenkins.plugins.secone.security.pojo.Threshold;
 import jenkins.model.Jenkins;
 
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 public class SecOneScannerPluginTest {
 
 	@Mock
@@ -93,8 +92,8 @@ public class SecOneScannerPluginTest {
 	@Mock
 	private ObjectFactory objectFactory;
 
-	private static MockedStatic<Jenkins> mockedJenkins;
-	private static MockedStatic<CredentialsProvider> mockedCredentialsProvider;
+	private MockedStatic<Jenkins> mockedJenkins;
+	private MockedStatic<CredentialsProvider> mockedCredentialsProvider;
 
 	private static String WORKSPACE_DIRECTORY_LOCATION;
 
@@ -106,7 +105,7 @@ public class SecOneScannerPluginTest {
 
 	private static InputStream sampleInitiateScaScanResponseStream;
 
-	@Before
+	@BeforeEach
 	public void setUp() throws Exception {
 
 		WORKSPACE_DIRECTORY_LOCATION = new File("src/test/resources/test-data").getAbsolutePath();
@@ -127,7 +126,7 @@ public class SecOneScannerPluginTest {
 		mockJenkins();
 	}
 
-	@After
+	@AfterEach
 	public void close() {
 		mockedJenkins.close();
 		mockedCredentialsProvider.close();
@@ -154,7 +153,7 @@ public class SecOneScannerPluginTest {
 
 	}
 
-	@Test(expected = AbortException.class)
+	@Test
 	public void testScaScanWithThresholdWhereStatusActionIsFail() throws Exception {
 		plugin.setRunSast(false);
 		plugin.setApplyThreshold(true);
@@ -164,7 +163,7 @@ public class SecOneScannerPluginTest {
 
 		plugin.setThreshold(threshold);
 
-		plugin.perform(abstractBuild, launcher, buildListener);
+		assertThrows(AbortException.class, () -> plugin.perform(abstractBuild, launcher, buildListener));
 
 	}
 
@@ -251,7 +250,7 @@ public class SecOneScannerPluginTest {
 
 	}
 
-	@Test(expected = AbortException.class)
+	@Test
 	public void testScaSastScanWithThresholdWhereStatusActionIsFail() throws Exception {
 		plugin.setRunSast(true);
 		plugin.setApplyThreshold(true);
@@ -261,7 +260,7 @@ public class SecOneScannerPluginTest {
 
 		plugin.setThreshold(threshold);
 
-		plugin.perform(abstractBuild, launcher, buildListener);
+		assertThrows(AbortException.class, () -> plugin.perform(abstractBuild, launcher, buildListener));
 
 	}
 
@@ -323,7 +322,6 @@ public class SecOneScannerPluginTest {
 		CloseableHttpClient client = mock(CloseableHttpClient.class);
 		when(objectFactory.createHttpClient(any(URI.class))).thenReturn(client);
 
-		// when(client.execute(httpPost)).thenReturn(scaHttpResponse);
 		when(client.execute(any(HttpPost.class))).thenReturn(scaHttpResponse).thenReturn(scaStatusHttpResponse)
 				.thenReturn(sastHttpResponse).thenReturn(sastStatusHttpResponse);
 
@@ -344,13 +342,11 @@ public class SecOneScannerPluginTest {
 
 	}
 
-	@Test(expected = AbortException.class)
+	@Test
 	public void testInvalidScmUrl() throws Exception {
 		when(buildListener.getLogger()).thenReturn(System.out);
 		when(abstractBuild.getEnvironment(buildListener)).thenReturn(envVars);
 		when(envVars.get("SEC1_INSTANCE_URL")).thenReturn("https://api.sec1.io");
-
-		// when(envVars.get("WORKSPACE")).thenReturn("idont/exist");
 
 		StringCredentials apiKeyCred = mock(StringCredentials.class);
 
@@ -363,21 +359,22 @@ public class SecOneScannerPluginTest {
 
 		when(apiKeyCred.getSecret().getPlainText()).thenReturn("testApiKey");
 
-		plugin.perform(abstractBuild, launcher, buildListener);
+		assertThrows(AbortException.class, () -> plugin.perform(abstractBuild, launcher, buildListener));
 	}
 
-	@Test(expected = AbortException.class)
+	@Test
 	public void testScanFromUIException() throws Exception {
 		when(buildListener.getLogger()).thenReturn(System.out);
 		when(abstractBuild.getEnvironment(buildListener)).thenReturn(envVars);
 
 		when(envVars.get("WORKSPACE")).thenReturn(WORKSPACE_DIRECTORY_LOCATION);
-		assertEquals(1, plugin.perform(abstractBuild, launcher, buildListener));
+
+		assertThrows(AbortException.class, () -> plugin.perform(abstractBuild, launcher, buildListener));
 	}
 
-	@Test(expected = AbortException.class)
+	@Test
 	public void testPerformFromScriptException() throws Exception {
-		plugin.perform(run, filePath, envVars, launcher, taskListener);
+		assertThrows(AbortException.class, () -> plugin.perform(run, filePath, envVars, launcher, taskListener));
 	}
 
 	@Test
