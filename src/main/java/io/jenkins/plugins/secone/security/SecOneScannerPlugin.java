@@ -92,6 +92,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private String scanTag;
 
+	private String scmUrl;
+
 	private boolean printInAnsiColor;
 
 	private ObjectFactory objectFactory;
@@ -164,6 +166,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	@DataBoundSetter
 	public void setScanTag(String scanTag) {
 		this.scanTag = scanTag;
+	}
+
+	public String getScmUrl() {
+		return scmUrl;
+	}
+
+	@DataBoundSetter
+	public void setScmUrl(String scmUrl) {
+		this.scmUrl = scmUrl;
 	}
 
 	// Backward compatibility for tag
@@ -325,17 +336,22 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			throw new AbortException(getErrorMessageInAnsi("Exception while getting environment variables."));
 		}
 		String gitUrl = null;
-		try {
-			gitUrl = getGitUrl(workingDirectory);
-			if (StringUtils.isBlank(gitUrl)) {
-				gitUrl = run.getEnvironment(listener).get("GIT_URL");
+		if (StringUtils.isNotBlank(this.scmUrl)) {
+			gitUrl = this.scmUrl;
+			printLogs(listener.getLogger(), "Using configured SCM URL: " + gitUrl, "g");
+		} else {
+			try {
+				gitUrl = getGitUrl(workingDirectory);
+				if (StringUtils.isBlank(gitUrl)) {
+					gitUrl = run.getEnvironment(listener).get("GIT_URL");
+				}
+			} catch (IOException | InterruptedException e) {
+				logger.error("Error - Check your git configuration. ", e);
 			}
-		} catch (IOException | InterruptedException e) {
-			logger.error("Error - Check your git configuration. ", e);
-		}
-		if (StringUtils.isBlank(gitUrl)) {
-			throw new AbortException(
-					getErrorMessageInAnsi("Exception while getting getting git url. Check your git configuration."));
+			if (StringUtils.isBlank(gitUrl)) {
+				throw new AbortException(
+						getErrorMessageInAnsi("Unable to detect Git URL. Please configure 'scmUrl' parameter or check your git configuration."));
+			}
 		}
 		scmUrl.append(gitUrl);
 		StringBuilder appName = new StringBuilder();
