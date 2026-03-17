@@ -13,6 +13,9 @@
     <f:entry title="Run SAST Scan" field="runSast">
     	<f:checkbox checked="${instance == null || instance.runSast}"/>
 	</f:entry>
+	<f:entry title="SCM URL" field="scmUrl">
+		<f:textbox default="" />
+	</f:entry>
 	<f:entry title="Scan Tag" field="scanTag">
 		<f:textbox default="" />
 	</f:entry>

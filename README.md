@@ -101,6 +101,7 @@ pipeline {
         script {
           sec1Security(
             apiCredentialsId: '<Your Sec1 Api Key ID>',
+            scmUrl: 'https://github.com/your-org/your-repo',
             runSca: true,
             runSast: true,
             scanTag: 'my-scan-tag',
@@ -127,6 +128,10 @@ You can pass the following parameters to your `sec1Security` step.
 #### `apiCredentialsId` (required, default: *none*)
 
 Sec1 API Key Credential ID. As configured in "[2. Configure a Sec1 API Token Credential](#2-configure-a-sec1-api-token-credential)".
+
+#### `scmUrl` (optional, default: *auto-detected*)
+
+Git repository URL to scan. If not provided, the plugin attempts to detect it from the workspace `.git/config` or the `GIT_URL` environment variable. Use this parameter when auto-detection fails (e.g., on some pipeline configurations).
 
 #### `runSca` (optional, default: `true`)
 
