@@ -13,6 +13,12 @@
     <f:entry title="Run SAST Scan" field="runSast">
     	<f:checkbox checked="${instance == null || instance.runSast}"/>
 	</f:entry>
+    <f:entry title="SAST Incremental Scan" field="sastIncrementalScan">
+    	<f:checkbox checked="${instance.sastIncrementalScan}"/>
+	</f:entry>
+    <f:entry title="Async Scan (fire-and-forget)" field="asyncScan">
+    	<f:checkbox checked="${instance.asyncScan}"/>
+	</f:entry>
 	<f:entry title="SCM URL" field="scmUrl">
 		<f:textbox default="" />
 	</f:entry>

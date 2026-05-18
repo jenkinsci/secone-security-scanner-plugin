@@ -17,14 +17,13 @@ import jenkins.model.Jenkins;
 
 public class ObjectFactory {
 
+	private static final int CONNECT_TIMEOUT_MS = 30_000;
+	private static final int SOCKET_TIMEOUT_MS = 120_000;
+	private static final int CONNECTION_REQUEST_TIMEOUT_MS = 30_000;
+
 	public HttpPost createHttpPost(String uri) throws URISyntaxException {
 		HttpPost post = new HttpPost(uri);
-
-		RequestConfig config = getRequestConfig(new URI(uri));
-		if (config != null) {
-			post.setConfig(config);
-		}
-
+		post.setConfig(getRequestConfig(new URI(uri)));
 		return post;
 	}
 
@@ -32,12 +31,17 @@ public class ObjectFactory {
 		Jenkins jenkins = Jenkins.getInstanceOrNull();
 		ProxyConfiguration proxyConfig = (jenkins != null) ? jenkins.proxy : null;
 
+		RequestConfig defaultConfig = baseRequestConfigBuilder().build();
 		if (proxyConfig != null && shouldUseProxy(proxyConfig, apiUri.getHost())) {
 			HttpHost proxyHost = new HttpHost(proxyConfig.name, proxyConfig.port);
-			return HttpClients.custom().setProxy(proxyHost).build();
-		} else {
-			return HttpClients.createDefault();
+			return HttpClients.custom()
+					.setProxy(proxyHost)
+					.setDefaultRequestConfig(defaultConfig)
+					.build();
 		}
+		return HttpClients.custom()
+				.setDefaultRequestConfig(defaultConfig)
+				.build();
 	}
 
 	public String getGitFolderConfigPath() {
@@ -45,17 +49,24 @@ public class ObjectFactory {
 	}
 
 	private ProxyConfiguration getJenkinsProxyConfiguration() {
-		Jenkins jenkins = Jenkins.get();
-		return jenkins.proxy;
+		Jenkins jenkins = Jenkins.getInstanceOrNull();
+		return jenkins != null ? jenkins.proxy : null;
 	}
 
 	private RequestConfig getRequestConfig(URI uri) {
+		RequestConfig.Builder builder = baseRequestConfigBuilder();
 		ProxyConfiguration proxy = getJenkinsProxyConfiguration();
 		if (proxy != null && shouldUseProxy(proxy, uri.getHost())) {
-			HttpHost proxyHost = new HttpHost(proxy.name, proxy.port);
-			return RequestConfig.custom().setProxy(proxyHost).build();
+			builder.setProxy(new HttpHost(proxy.name, proxy.port));
 		}
-		return null;
+		return builder.build();
+	}
+
+	private RequestConfig.Builder baseRequestConfigBuilder() {
+		return RequestConfig.custom()
+				.setConnectTimeout(CONNECT_TIMEOUT_MS)
+				.setSocketTimeout(SOCKET_TIMEOUT_MS)
+				.setConnectionRequestTimeout(CONNECTION_REQUEST_TIMEOUT_MS);
 	}
 
 	private boolean shouldUseProxy(ProxyConfiguration proxy, String host) {

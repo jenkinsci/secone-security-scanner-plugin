@@ -104,6 +104,8 @@ pipeline {
             scmUrl: 'https://github.com/your-org/your-repo',
             runSca: true,
             runSast: true,
+            sastIncrementalScan: false,
+            asyncScan: false,
             scanTag: 'my-scan-tag',
             applyThreshold: true,
             actionOnThresholdBreached: 'unstable',
@@ -141,6 +143,16 @@ Whether SCA (Software Composition Analysis) scan needs to be executed for the co
 
 Whether SAST (Static Application Security Testing) scan needs to be executed for the configured git repository.
 
+#### `sastIncrementalScan` (optional, default: `false`)
+
+Run the SAST scan in incremental mode. Only changed code is analyzed, which is faster for large repositories. Requires a baseline full scan to exist on the Sec1 server.
+
+#### `asyncScan` (optional, default: `false`)
+
+Fire-and-forget mode. The plugin submits the scan and exits without waiting for the result, so the pipeline keeps running while the scan completes on the Sec1 server. The report URL is printed in the build log.
+
+If `applyThreshold` is also `true`, the plugin still polls for the result since threshold checks need the final counts. Use `asyncScan` without `applyThreshold` to get true fire-and-forget behavior.
+
 #### `scanTag` (optional, default: *branch name*)
 
 A tag to identify this scan. If not provided, the branch name is used. If the branch name is also unavailable, defaults to `default`.
@@ -159,6 +171,10 @@ If the scan reports more vulnerabilities than the configured threshold for the r
 #### `actionOnThresholdBreached` (optional, default: `fail`)
 
 The action to take on the build if a vulnerability threshold is breached. Possible values: `fail`, `unstable`, `continue`
+
+## Scan duration
+
+The plugin polls every 10 seconds for the scan result and times out after 30 minutes. For scans that take longer, set `asyncScan: true` (without `applyThreshold`) so the pipeline does not block.
 
 ## Troubleshooting
 
