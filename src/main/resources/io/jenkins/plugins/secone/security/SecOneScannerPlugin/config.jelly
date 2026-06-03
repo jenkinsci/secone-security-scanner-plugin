@@ -13,6 +13,19 @@
     <f:entry title="Run SAST Scan" field="runSast">
     	<f:checkbox checked="${instance == null || instance.runSast}"/>
 	</f:entry>
+    <f:entry title="SAST Mode" field="sastMode">
+        <f:select default="api"/>
+    </f:entry>
+    <f:entry title="SAST CLI Installation" field="sastInstallation">
+        <j:choose>
+            <j:when test="${descriptor.hasSastInstallations()}">
+                <f:select/>
+            </j:when>
+            <j:otherwise>
+                <f:readOnlyTextbox value="No Sec1 SAST installations defined. Configure one under Manage Jenkins > Tools."/>
+            </j:otherwise>
+        </j:choose>
+    </f:entry>
     <f:entry title="SAST Incremental Scan" field="sastIncrementalScan">
     	<f:checkbox checked="${instance.sastIncrementalScan}"/>
 	</f:entry>
