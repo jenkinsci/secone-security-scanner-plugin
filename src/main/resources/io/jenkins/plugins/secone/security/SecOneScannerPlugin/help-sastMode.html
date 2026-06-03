@@ -1,0 +1,7 @@
+<div>
+    Where the SAST scan runs.
+    <br/><br/>
+    <b>API (default):</b> the Sec1 server clones the repository and runs the scan. No local binary required.
+    <br/><br/>
+    <b>CLI:</b> the scan runs on the Jenkins agent using the sec1-sast binary, then uploads the report to the Sec1 service. Useful when the repository cannot be reached from the Sec1 server. Requires a Sec1 SAST installation configured under Manage Jenkins &gt; Tools. asyncScan and sastIncrementalScan are ignored in CLI mode.
+</div>

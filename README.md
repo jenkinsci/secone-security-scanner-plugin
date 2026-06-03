@@ -143,6 +143,19 @@ Whether SCA (Software Composition Analysis) scan needs to be executed for the co
 
 Whether SAST (Static Application Security Testing) scan needs to be executed for the configured git repository.
 
+#### `sastMode` (optional, default: `api`)
+
+Where the SAST scan runs. Two values:
+
+- `api` (default) — the Sec1 server clones the repo and runs the scan. Existing behavior.
+- `cli` — the scan runs on the Jenkins agent via the `sec1-sast` binary, which uploads the report to the Sec1 service. Useful when the Sec1 server cannot reach your repository (private SCM, air-gapped network).
+
+In CLI mode `asyncScan` and `sastIncrementalScan` are ignored (the CLI runs synchronously and does not currently support incremental scans).
+
+#### `sastInstallation` (required when `sastMode: 'cli'`)
+
+The name of a Sec1 SAST installation configured under **Manage Jenkins → Tools → Sec1 SAST CLI**. Each installation either points to a pre-installed `sec1-sast` binary on the agent or uses the auto-installer to download it from sec1.io on first use.
+
 #### `sastIncrementalScan` (optional, default: `false`)
 
 Run the SAST scan in incremental mode. Only changed code is analyzed, which is faster for large repositories. Requires a baseline full scan to exist on the Sec1 server.
@@ -175,6 +188,19 @@ The action to take on the build if a vulnerability threshold is breached. Possib
 ## Scan duration
 
 The plugin polls every 10 seconds for the scan result and times out after 30 minutes. For scans that take longer, set `asyncScan: true` (without `applyThreshold`) so the pipeline does not block.
+
+## Running SAST on the agent (CLI mode)
+
+By default the SAST scan runs on the Sec1 server. To run it on the Jenkins agent instead, set `sastMode: 'cli'` and configure a Sec1 SAST installation:
+
+1. Go to **Manage Jenkins → Tools → Sec1 SAST CLI installations**.
+2. Click **Add Sec1 SAST CLI** and give it a name (for example `sec1-sast`).
+3. Either:
+   - Set **Installation directory** to the directory containing a pre-installed `sec1-sast` binary on the agent, OR
+   - Add the **Install from sec1.io (latest)** installer. The plugin downloads the right binary for the agent's platform on first use and caches it under `$JENKINS_HOME/tools/`.
+4. In your job, set `sastMode: 'cli'` and `sastInstallation: 'sec1-sast'` (matching the name above).
+
+The plugin runs the CLI on the agent, streams its output to the build log, extracts the report ID, and then polls the Sec1 server for the final status (so threshold enforcement still respects server-side triage like false-positive marks).
 
 ## Troubleshooting
 

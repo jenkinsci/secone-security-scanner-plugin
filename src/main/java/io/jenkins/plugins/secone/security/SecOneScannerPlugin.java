@@ -1,6 +1,7 @@
 package io.jenkins.plugins.secone.security;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
@@ -15,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
 
+import org.apache.commons.io.output.TeeOutputStream;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.math.NumberUtils;
 import org.apache.http.ConnectionClosedException;
@@ -35,6 +37,7 @@ import org.slf4j.LoggerFactory;
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 
 import hudson.AbortException;
+import hudson.CopyOnWrite;
 import hudson.EnvVars;
 import hudson.Extension;
 import hudson.FilePath;
@@ -45,13 +48,17 @@ import hudson.model.AbstractBuild;
 import hudson.model.AbstractProject;
 import hudson.model.BuildListener;
 import hudson.model.Job;
+import hudson.model.Node;
 import hudson.model.Result;
 import hudson.model.Run;
 import hudson.model.TaskListener;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.Builder;
+import hudson.util.ArgumentListBuilder;
+import hudson.util.ListBoxModel;
 import io.jenkins.plugins.secone.security.object.factory.ObjectFactory;
 import io.jenkins.plugins.secone.security.pojo.Threshold;
+import io.jenkins.plugins.secone.security.tools.Sec1SastInstallation;
 import jenkins.model.Jenkins;
 import jenkins.tasks.SimpleBuildStep;
 
@@ -96,7 +103,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private boolean sastIncrementalScan;
 
+	private String sastMode;
+
+	private String sastInstallation;
+
 	private boolean printInAnsiColor;
+
+	private transient FilePath workspaceForCli;
+	private transient Launcher launcherForCli;
+	private transient EnvVars envForCli;
 
 	private ObjectFactory objectFactory;
 
@@ -197,6 +212,28 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.sastIncrementalScan = sastIncrementalScan;
 	}
 
+	public String getSastMode() {
+		return StringUtils.isBlank(sastMode) ? "api" : sastMode;
+	}
+
+	@DataBoundSetter
+	public void setSastMode(String sastMode) {
+		this.sastMode = sastMode;
+	}
+
+	public String getSastInstallation() {
+		return sastInstallation;
+	}
+
+	@DataBoundSetter
+	public void setSastInstallation(String sastInstallation) {
+		this.sastInstallation = sastInstallation;
+	}
+
+	private boolean isSastCliMode() {
+		return "cli".equalsIgnoreCase(getSastMode());
+	}
+
 	private boolean isAsyncFireAndForget() {
 		return asyncScan && !applyThreshold;
 	}
@@ -231,6 +268,9 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			objectFactory = new ObjectFactory();
 		}
 		printInAnsiColor = isAnsiColorPluginInstalled(build.getParent());
+		this.workspaceForCli = build.getWorkspace();
+		this.launcherForCli = launcher;
+		this.envForCli = build.getEnvironment(listener);
 		String workingDirectory = getGitWorkingDirectory(build.getEnvironment(listener), listener);
 		int result = performScan(build, listener, applyThreshold, workingDirectory);
 		if (result != 0) {
@@ -286,6 +326,9 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		}
 
 		printInAnsiColor = isAnsiColorPluginInstalled(run.getParent());
+		this.workspaceForCli = workspace;
+		this.launcherForCli = launcher;
+		this.envForCli = env;
 
 		String workingDirectory = getGitWorkingDirectory(env, listener);
 
@@ -440,9 +483,134 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		return Math.max(scaResult, sastResult);
 	}
 
+	private int runSastScanViaCli(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
+			StringBuilder scmUrl, StringBuilder appName, String resolvedTag, String dashboardUrl)
+			throws AbortException, InterruptedException {
+		printSastStartMessage(listener);
+
+		if (workspaceForCli == null || launcherForCli == null) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"SAST CLI mode requires a workspace and a node. Run this step on an agent."));
+		}
+		if (StringUtils.isBlank(sastInstallation)) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"SAST CLI mode is enabled but no Sec1 SAST installation is selected. "
+							+ "Configure one under Manage Jenkins > Tools."));
+		}
+
+		Sec1SastInstallation selected = null;
+		for (Sec1SastInstallation inst : getMyDescriptor().getSastInstallations()) {
+			if (inst.getName().equals(sastInstallation)) {
+				selected = inst;
+				break;
+			}
+		}
+		if (selected == null) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"Sec1 SAST installation '" + sastInstallation + "' not found. "
+							+ "Check Manage Jenkins > Tools."));
+		}
+
+		String executable;
+		try {
+			hudson.model.Computer computer = workspaceForCli.toComputer();
+			Node node = computer == null ? null : computer.getNode();
+			if (node == null) {
+				throw new AbortException(getErrorMessageInAnsi(
+						"Unable to resolve agent node for SAST CLI execution."));
+			}
+			Sec1SastInstallation resolved = selected.forNode(node, listener).forEnvironment(envForCli);
+			executable = resolved.getExecutable(launcherForCli);
+		} catch (IOException ex) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"Failed to resolve sec1-sast executable on agent: " + ex.getMessage()));
+		}
+
+		if (asyncScan) {
+			printLogs(listener.getLogger(),
+					"asyncScan is ignored in CLI mode (the CLI runs synchronously on the agent).", "r");
+		}
+		if (sastIncrementalScan) {
+			printLogs(listener.getLogger(),
+					"sastIncrementalScan is ignored in CLI mode.", "r");
+		}
+
+		listener.getLogger().println("-------------------- Sec1 SAST Scan Config --------------------");
+		listener.getLogger().println("Mode                   CLI");
+		listener.getLogger().println("SCM Url                " + scmUrl);
+		listener.getLogger().println("Tag                    " + resolvedTag);
+		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
+
+		FilePath reportFile = workspaceForCli.child("sec1-report.json");
+		ArgumentListBuilder args = new ArgumentListBuilder();
+		args.add(executable);
+		args.add("scan");
+		args.add("--scanner=sast,secrets");
+		args.add("--enable-dataflow");
+		args.add("-o").add(reportFile.getRemote());
+		args.add("--upload-report");
+		args.add("--app-name").add(appName.toString());
+		args.add(workspaceForCli.getRemote());
+
+		EnvVars cliEnv = new EnvVars(envForCli == null ? new EnvVars() : envForCli);
+		cliEnv.put("SAST_UPLOAD_API_KEY", sec1ApiKey);
+
+		ByteArrayOutputStream stdoutBuf = new ByteArrayOutputStream();
+		int exitCode;
+		try {
+			exitCode = launcherForCli.launch()
+					.cmds(args)
+					.envs(cliEnv)
+					.pwd(workspaceForCli)
+					.stdout(new TeeOutputStream(listener.getLogger(), stdoutBuf))
+					.stderr(listener.getLogger())
+					.join();
+		} catch (IOException ex) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"sec1-sast CLI failed to start: " + ex.getMessage()));
+		}
+
+		// CLI exit codes: 0 = no findings, 1 = findings present, 2+ = scan failed.
+		if (exitCode >= 2) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"sec1-sast CLI exited with code " + exitCode + ". Failing the build."));
+		}
+
+		String reportId = parseReportIdFromCliOutput(stdoutBuf.toString(StandardCharsets.UTF_8));
+		if (StringUtils.isBlank(reportId)) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"Unable to parse Report ID from sec1-sast CLI output."));
+		}
+		listener.getLogger().println("Report Id              " + reportId);
+
+		int result = pollSastStatusAndApplyThreshold(
+				reportId, fossInstanceUrl + SAST_STATUS_CHECK_URL, dashboardUrl, sec1ApiKey, listener);
+		printSastEndMessage(listener);
+		return result;
+	}
+
+	private static final java.util.regex.Pattern REPORT_ID_PATTERN =
+			java.util.regex.Pattern.compile("Report ID:\\s*(\\S+)", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+	private String parseReportIdFromCliOutput(String stdout) {
+		if (StringUtils.isBlank(stdout)) {
+			return null;
+		}
+		java.util.regex.Matcher m = REPORT_ID_PATTERN.matcher(stdout);
+		return m.find() ? m.group(1) : null;
+	}
+
+	private SecOneScannerPlugin.DescriptorImpl getMyDescriptor() {
+		return (SecOneScannerPlugin.DescriptorImpl)
+				Jenkins.get().getDescriptorOrDie(SecOneScannerPlugin.class);
+	}
+
 	private int runSastScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
 			String workingDirectory, StringBuilder scmUrl, StringBuilder appName, String branchName,
 			String dashboardUrl, String resolvedTag) throws AbortException, InterruptedException {
+		if (isSastCliMode()) {
+			return runSastScanViaCli(fossInstanceUrl, listener, sec1ApiKey, scmUrl, appName, resolvedTag, dashboardUrl);
+		}
 		printSastStartMessage(listener);
 		int result = 0;
 
@@ -636,6 +804,128 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			branchName = branchName.substring("origin/".length());
 		}
 		return branchName;
+	}
+
+	private int pollSastStatusAndApplyThreshold(String reportId, String sastStatusCheckUrl, String dashboardUrl,
+			String sec1ApiKey, TaskListener listener) throws AbortException {
+		int result = 0;
+		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(sastStatusCheckUrl))) {
+			String scanStatus = "INITIATED";
+			JSONObject responseJson = new JSONObject();
+			long startTime = System.currentTimeMillis();
+			long maxDuration = 30 * 60 * 1000; // 30 minutes
+
+			HttpPost statusPost = objectFactory.createHttpPost(sastStatusCheckUrl);
+			statusPost.setHeader(API_KEY_HEADER, sec1ApiKey);
+			statusPost.setHeader("Content-Type", "application/json");
+			statusPost.setHeader("Accept", "application/json");
+
+			while (!StringUtils.equalsIgnoreCase("COMPLETED", scanStatus)) {
+				if (System.currentTimeMillis() - startTime > maxDuration) {
+					listener.getLogger().println("-------------------- Sec1 SAST Scan Result --------------------");
+					listener.getLogger().println("Report Url             " + dashboardUrl + "/sast-advance-dashboard/" + reportId);
+					listener.getLogger().println("Status                 TIMED OUT");
+					throw new AbortException(
+							getErrorMessageInAnsi("Sec1 SAST Scan timed out after 30 minutes."));
+				}
+
+				try {
+					Thread.sleep(10000);
+				} catch (InterruptedException ie) {
+					statusPost.abort();
+					Thread.currentThread().interrupt();
+					throw new AbortException(
+							getErrorMessageInAnsi("Sec1 SAST Scan interrupted while waiting for status."));
+				}
+
+				JSONObject statusPayload = new JSONObject();
+				JSONArray reportIdArray = new JSONArray();
+				reportIdArray.put(reportId);
+				statusPayload.put("reportId", reportIdArray);
+				statusPost.setEntity(new StringEntity(statusPayload.toString(), StandardCharsets.UTF_8));
+
+				try (CloseableHttpResponse statusResponse = client.execute(statusPost)) {
+					String statusContent = statusResponse.getEntity() != null
+							? EntityUtils.toString(statusResponse.getEntity(), StandardCharsets.UTF_8)
+							: "";
+					JSONArray statusArray = new JSONArray(statusContent);
+					responseJson = statusArray.getJSONObject(0);
+					scanStatus = responseJson.getString("scanStatus");
+				}
+
+				if (StringUtils.equalsIgnoreCase("SCANNING", scanStatus)) {
+					listener.getLogger().println("Sec1 SAST Scan in progress...");
+				} else if (scanStatus.equals("FAILED")) {
+					listener.getLogger().println("-------------------- Sec1 SAST Scan Result --------------------");
+					listener.getLogger().println("Report Url             "
+							+ dashboardUrl + "/sast-advance-dashboard/" + reportId);
+					listener.getLogger().println("Status                 FAILURE");
+					throw new AbortException(
+							getErrorMessageInAnsi("Sec1 SAST Security Scan Finished with failures"));
+				}
+			}
+
+			int critical = responseJson.optInt("critical");
+			int high = responseJson.optInt("high");
+			int medium = responseJson.optInt("medium");
+			int low = responseJson.optInt("low");
+
+			listener.getLogger().println("-------------------- Sec1 SAST Scan Result --------------------");
+			if (StringUtils.isBlank(responseJson.optString("errorMessage"))) {
+				String reportUrl = dashboardUrl + "/sast-advance-dashboard/" + reportId;
+				listener.getLogger().println("Vulnerabilities        Critical: " + critical
+						+ ", High: " + high + ", Medium: " + medium + ", Low: " + low);
+				listener.getLogger().println("Report Url             " + reportUrl);
+
+				if (applyThreshold && threshold != null) {
+					if (critical != 0 && threshold.getCriticalThreshold() != null
+							&& NumberUtils.isDigits(threshold.getCriticalThreshold())
+							&& critical >= Integer.parseInt(threshold.getCriticalThreshold())) {
+						result = failBuildOnThresholdBreach(
+								"Critical Vulnerability Threshold breached. Found: " + critical
+										+ ", Allowed: " + threshold.getCriticalThreshold(),
+								listener, threshold);
+					}
+					if (high != 0 && threshold.getHighThreshold() != null
+							&& NumberUtils.isDigits(threshold.getHighThreshold())
+							&& high >= Integer.parseInt(threshold.getHighThreshold())) {
+						result = failBuildOnThresholdBreach(
+								"High Vulnerability Threshold breached. Found: " + high
+										+ ", Allowed: " + threshold.getHighThreshold(),
+								listener, threshold);
+					}
+					if (medium != 0 && threshold.getMediumThreshold() != null
+							&& NumberUtils.isDigits(threshold.getMediumThreshold())
+							&& medium >= Integer.parseInt(threshold.getMediumThreshold())) {
+						result = failBuildOnThresholdBreach(
+								"Medium Vulnerability Threshold breached. Found: " + medium
+										+ ", Allowed: " + threshold.getMediumThreshold(),
+								listener, threshold);
+					}
+					if (low != 0 && threshold.getLowThreshold() != null
+							&& NumberUtils.isDigits(threshold.getLowThreshold())
+							&& low >= Integer.parseInt(threshold.getLowThreshold())) {
+						result = failBuildOnThresholdBreach(
+								"Low Vulnerability Threshold breached. Found: " + low
+										+ ", Allowed: " + threshold.getLowThreshold(),
+								listener, threshold);
+					}
+				}
+			} else {
+				printLogs(listener.getLogger(),
+						"Error Details : " + responseJson.optString("errorMessage"), "r");
+				result = 2;
+			}
+		} catch (AbortException ex) {
+			throw ex;
+		} catch (IOException ex) {
+			logger.error("SAST status polling failed with IOException", ex);
+			throw new AbortException(getErrorMessageInAnsi(
+					"Attention: Build Failed. Check configuration. " + ex.getMessage()));
+		} catch (URISyntaxException e) {
+			throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
+		}
+		return result;
 	}
 
 	private ScanTriggerResponse triggerSastScan(String apiUrl, JSONObject inputParamsMap, String sec1ApiKey) {
@@ -951,8 +1241,12 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	@Extension
 	public static final class DescriptorImpl extends BuildStepDescriptor<Builder> {
 
+		@CopyOnWrite
+		private volatile Sec1SastInstallation[] sastInstallations = new Sec1SastInstallation[0];
+
 		public DescriptorImpl() {
 			super(SecOneScannerPlugin.class);
+			load();
 		}
 
 		@Override
@@ -963,6 +1257,34 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		@Override
 		public String getDisplayName() {
 			return "Execute Sec1 Security Scan";
+		}
+
+		public Sec1SastInstallation[] getSastInstallations() {
+			return sastInstallations == null ? new Sec1SastInstallation[0] : sastInstallations.clone();
+		}
+
+		public void setSastInstallations(Sec1SastInstallation... installations) {
+			this.sastInstallations = installations == null ? new Sec1SastInstallation[0] : installations.clone();
+			save();
+		}
+
+		public boolean hasSastInstallations() {
+			return sastInstallations != null && sastInstallations.length > 0;
+		}
+
+		public ListBoxModel doFillSastInstallationItems() {
+			ListBoxModel items = new ListBoxModel();
+			for (Sec1SastInstallation inst : getSastInstallations()) {
+				items.add(inst.getName(), inst.getName());
+			}
+			return items;
+		}
+
+		public ListBoxModel doFillSastModeItems() {
+			ListBoxModel items = new ListBoxModel();
+			items.add("API (default)", "api");
+			items.add("CLI (run on agent)", "cli");
+			return items;
 		}
 	}
 
