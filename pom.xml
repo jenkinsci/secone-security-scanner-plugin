@@ -7,7 +7,7 @@
 	<parent>
 		<groupId>org.jenkins-ci.plugins</groupId>
 		<artifactId>plugin</artifactId>
-		<version>4.87</version>
+		<version>6.2211.v27f680c93c53</version>
 	</parent>
 
 	<groupId>io.jenkins.plugins</groupId>
@@ -37,8 +37,9 @@
 
 	<properties>
 		<!-- https://www.jenkins.io/doc/developer/plugin-development/choosing-jenkins-baseline/ -->
-		<jenkins.baseline>2.462</jenkins.baseline>
-		<jenkins.version>${jenkins.baseline}.1</jenkins.version>
+		<jenkins.baseline>2.479</jenkins.baseline>
+		<jenkins.version>${jenkins.baseline}.3</jenkins.version>
+		<ban-commons-lang-2.skip>false</ban-commons-lang-2.skip>
 		<changelist>999999-SNAPSHOT</changelist>
 		<gitHubRepo>jenkinsci/secone-security-scanner-plugin</gitHubRepo>
 		<ban-junit4-imports.skip>false</ban-junit4-imports.skip>
@@ -49,13 +50,17 @@
 			<dependency>
 				<groupId>io.jenkins.tools.bom</groupId>
 				<artifactId>bom-${jenkins.baseline}.x</artifactId>
-				<version>3334.v18e2a_2f48356</version>
+				<version>5054.v620b_5d2b_d5e6</version>
 				<type>pom</type>
 				<scope>import</scope>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>
 	<dependencies>
+		<dependency>
+			<groupId>io.jenkins.plugins</groupId>
+			<artifactId>commons-lang3-api</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.jenkins-ci.plugins</groupId>
 			<artifactId>git</artifactId>
