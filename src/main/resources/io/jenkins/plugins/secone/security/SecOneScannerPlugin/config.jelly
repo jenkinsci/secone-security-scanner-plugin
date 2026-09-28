@@ -10,6 +10,12 @@
     <f:entry title="Run SCA Scan" field="runSca">
     	<f:checkbox checked="${instance == null || instance.runSca}"/>
 	</f:entry>
+    <f:entry title="SCA Mode" field="scaMode">
+        <f:select default="api"/>
+    </f:entry>
+    <f:entry title="SBOM File" field="sbomFile">
+        <f:textbox default="" />
+    </f:entry>
     <f:entry title="Run SAST Scan" field="runSast">
     	<f:checkbox checked="${instance == null || instance.runSast}"/>
 	</f:entry>
