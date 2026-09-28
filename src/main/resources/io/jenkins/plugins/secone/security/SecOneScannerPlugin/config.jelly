@@ -16,6 +16,16 @@
     <f:entry title="SBOM File" field="sbomFile">
         <f:textbox default="" />
     </f:entry>
+    <f:entry title="Sec1 CLI Installation" field="scaInstallation">
+        <j:choose>
+            <j:when test="${descriptor.hasCliInstallations()}">
+                <f:select/>
+            </j:when>
+            <j:otherwise>
+                <f:readOnlyTextbox value="No Sec1 CLI installations defined. Configure one under Manage Jenkins > Tools."/>
+            </j:otherwise>
+        </j:choose>
+    </f:entry>
     <f:entry title="Run SAST Scan" field="runSast">
     	<f:checkbox checked="${instance == null || instance.runSast}"/>
 	</f:entry>
