@@ -1,0 +1,15 @@
+<div>
+    The Sec1 CLI installation used when <b>Scan Mode</b> is <b>CLI</b> — one
+    installation serves both scans. Configure it once under
+    <b>Manage Jenkins &gt; Tools &gt; Sec1 CLI</b> with the
+    "Install from sec1.io" installer; it is auto-downloaded to each agent
+    (refreshed daily) and carries both binaries:
+    <ul>
+        <li><b>sec1-cli</b> — generates a CycloneDX SBOM for the SCA scan
+            (via cdxgen, all ecosystems, using the agent's own toolchain and
+            registry credentials) and uploads it.</li>
+        <li><b>sec1-sast</b> — the SAST engine that analyzes the workspace
+            locally and uploads only the findings report.</li>
+    </ul>
+    The scan log prints the version of each binary used.
+</div>

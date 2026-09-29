@@ -7,28 +7,31 @@
 	<f:entry title="Credentials Id" field="apiCredentialsId">
         <f:textbox />
     </f:entry>
+    <f:entry title="Scan Mode" field="scanMode" help="/plugin/secone-sca-sast-security-scanner/help-scanMode.html">
+        <f:radioBlock name="scanMode" value="api" title="API (default) — scans run on the Sec1 server" inline="true"
+                      checked="${instance == null || instance.scanMode != 'cli'}"/>
+        <f:radioBlock name="scanMode" value="cli" title="CLI — scans run on the agent (private SCM / registries)" inline="true"
+                      checked="${instance.scanMode == 'cli'}">
+            <f:entry title="Sec1 CLI Installation" field="cliInstallation">
+                <j:choose>
+                    <j:when test="${descriptor.hasCliInstallations()}">
+                        <f:select/>
+                    </j:when>
+                    <j:otherwise>
+                        <f:readOnlyTextbox value="No Sec1 CLI installations defined. Configure one under Manage Jenkins > Tools."/>
+                    </j:otherwise>
+                </j:choose>
+            </f:entry>
+        </f:radioBlock>
+    </f:entry>
     <f:entry title="Run SCA Scan" field="runSca">
     	<f:checkbox checked="${instance == null || instance.runSca}"/>
 	</f:entry>
-    <f:entry title="Run SAST Scan" field="runSast">
-    	<f:checkbox checked="${instance == null || instance.runSast}"/>
-	</f:entry>
-    <f:entry title="SAST Mode" field="sastMode">
-        <f:select default="api"/>
-    </f:entry>
-    <f:entry title="SAST CLI Installation" field="sastInstallation">
-        <j:choose>
-            <j:when test="${descriptor.hasSastInstallations()}">
-                <f:select/>
-            </j:when>
-            <j:otherwise>
-                <f:readOnlyTextbox value="No Sec1 SAST installations defined. Configure one under Manage Jenkins > Tools."/>
-            </j:otherwise>
-        </j:choose>
-    </f:entry>
-    <f:entry title="SAST Incremental Scan" field="sastIncrementalScan">
-    	<f:checkbox checked="${instance.sastIncrementalScan}"/>
-	</f:entry>
+    <f:optionalBlock name="runSast" title="Run SAST Scan" inline="true" checked="${instance == null || instance.runSast}">
+        <f:entry title="SAST Incremental Scan" field="sastIncrementalScan">
+            <f:checkbox checked="${instance.sastIncrementalScan}"/>
+        </f:entry>
+    </f:optionalBlock>
     <f:entry title="Async Scan (fire-and-forget)" field="asyncScan">
     	<f:checkbox checked="${instance.asyncScan}"/>
 	</f:entry>
@@ -43,7 +46,7 @@
             <table style="padding-left:2%; width:100%;">
                 <tr>
                     <td>
-                        <f:entry title="${%criticalThresholdTitle}" field="criticalThreshold"> 
+                        <f:entry title="${%criticalThresholdTitle}" field="criticalThreshold">
                             <f:textbox default="0" value="${instance.threshold.criticalThreshold}"/>
                         </f:entry>
                     </td>
@@ -65,19 +68,19 @@
                 </tr>
                 <tr>
                 	<td colspan="4">
-                		On threshold breached, mark the <b>Build Status</b> as  
+                		On threshold breached, mark the <b>Build Status</b> as
                 	</td>
                 </tr>
                 <tr>
-                	<td>	
+                	<td>
                 		<f:radio name="statusAction" field="statusAction" title="Fail" checked="${instance.threshold.statusAction == 'fail' || !instance.threshold.statusAction}" value="fail"/>
                 	</td>
-                 	<td> 	
+                 	<td>
                  		<f:radio name="statusAction" field="statusAction" title="Unstable" checked="${instance.threshold.statusAction == 'unstable'}" value="unstable"/>
-                	</td>                 	
-                	<td>  	
+                	</td>
+                	<td>
                 		<f:radio name="statusAction" field="statusAction" title="Continue" checked="${instance.threshold.statusAction == 'continue'}" value="continue"/>
-                	</td>      	
+                	</td>
                 </tr>
             </table>
         </f:block>

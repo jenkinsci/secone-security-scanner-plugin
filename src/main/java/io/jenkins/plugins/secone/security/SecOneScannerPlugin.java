@@ -5,6 +5,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintStream;
 import java.net.MalformedURLException;
 import java.net.URI;
@@ -22,6 +23,7 @@ import org.apache.commons.lang.math.NumberUtils;
 import org.apache.http.ConnectionClosedException;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.ByteArrayEntity;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.util.EntityUtils;
@@ -58,6 +60,7 @@ import hudson.util.ArgumentListBuilder;
 import hudson.util.ListBoxModel;
 import io.jenkins.plugins.secone.security.object.factory.ObjectFactory;
 import io.jenkins.plugins.secone.security.pojo.Threshold;
+import io.jenkins.plugins.secone.security.tools.Sec1CliInstallation;
 import io.jenkins.plugins.secone.security.tools.Sec1SastInstallation;
 import jenkins.model.Jenkins;
 import jenkins.tasks.SimpleBuildStep;
@@ -98,6 +101,16 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	private String scanTag;
 
 	private String scmUrl;
+
+	private String scanMode;
+
+	private String scaMode;
+
+	private String sbomFile;
+
+	private String scaInstallation;
+
+	private String cliInstallation;
 
 	private boolean asyncScan;
 
@@ -194,6 +207,55 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.scmUrl = scmUrl;
 	}
 
+	public String getScanMode() {
+		return StringUtils.isBlank(scanMode) ? "api" : scanMode;
+	}
+
+	@DataBoundSetter
+	public void setScanMode(String scanMode) {
+		this.scanMode = scanMode;
+	}
+
+	/* Deprecated: per-scan mode. Use scanMode, which drives both scans. */
+	public String getScaMode() {
+		return StringUtils.isBlank(scaMode) ? "api" : scaMode;
+	}
+
+	@Deprecated
+	@DataBoundSetter
+	public void setScaMode(String scaMode) {
+		this.scaMode = scaMode;
+	}
+
+	public String getSbomFile() {
+		return sbomFile;
+	}
+
+	@DataBoundSetter
+	public void setSbomFile(String sbomFile) {
+		this.sbomFile = sbomFile;
+	}
+
+	public String getCliInstallation() {
+		return cliInstallation;
+	}
+
+	@DataBoundSetter
+	public void setCliInstallation(String cliInstallation) {
+		this.cliInstallation = cliInstallation;
+	}
+
+	/* Deprecated: use cliInstallation, which serves both SCA and SAST. */
+	public String getScaInstallation() {
+		return scaInstallation;
+	}
+
+	@Deprecated
+	@DataBoundSetter
+	public void setScaInstallation(String scaInstallation) {
+		this.scaInstallation = scaInstallation;
+	}
+
 	public boolean isAsyncScan() {
 		return asyncScan;
 	}
@@ -230,8 +292,18 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.sastInstallation = sastInstallation;
 	}
 
+	private boolean isCliScanMode() {
+		return "cli".equalsIgnoreCase(getScanMode());
+	}
+
 	private boolean isSastCliMode() {
-		return "cli".equalsIgnoreCase(getSastMode());
+		// scanMode: 'cli' switches both scans; legacy sastMode kept for
+		// configurations written before the single flag existed.
+		return isCliScanMode() || "cli".equalsIgnoreCase(getSastMode());
+	}
+
+	private boolean isScaSbomMode() {
+		return isCliScanMode() || "sbom".equalsIgnoreCase(getScaMode());
 	}
 
 	private boolean isAsyncFireAndForget() {
@@ -448,6 +520,9 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			try {
 				scaResult = runScaScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
 						banchName, dashboardUrl, resolvedTag);
+			} catch (InterruptedException ex) {
+				Thread.currentThread().interrupt();
+				throw new AbortException(getErrorMessageInAnsi("Sec1 SCA scan interrupted."));
 			} catch (AbortException ex) {
 				if (runSast) {
 					// Save exception to re-throw after SAST scan completes
@@ -492,23 +567,10 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			throw new AbortException(getErrorMessageInAnsi(
 					"SAST CLI mode requires a workspace and a node. Run this step on an agent."));
 		}
-		if (StringUtils.isBlank(sastInstallation)) {
+		if (StringUtils.isBlank(cliInstallation) && StringUtils.isBlank(sastInstallation)) {
 			throw new AbortException(getErrorMessageInAnsi(
-					"SAST CLI mode is enabled but no Sec1 SAST installation is selected. "
-							+ "Configure one under Manage Jenkins > Tools."));
-		}
-
-		Sec1SastInstallation selected = null;
-		for (Sec1SastInstallation inst : getMyDescriptor().getSastInstallations()) {
-			if (inst.getName().equals(sastInstallation)) {
-				selected = inst;
-				break;
-			}
-		}
-		if (selected == null) {
-			throw new AbortException(getErrorMessageInAnsi(
-					"Sec1 SAST installation '" + sastInstallation + "' not found. "
-							+ "Check Manage Jenkins > Tools."));
+					"CLI scan mode is enabled but no Sec1 CLI installation is selected. "
+							+ "Configure one under Manage Jenkins > Tools and set cliInstallation."));
 		}
 
 		String executable;
@@ -519,8 +581,27 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				throw new AbortException(getErrorMessageInAnsi(
 						"Unable to resolve agent node for SAST CLI execution."));
 			}
-			Sec1SastInstallation resolved = selected.forNode(node, listener).forEnvironment(envForCli);
-			executable = resolved.getExecutable(launcherForCli);
+			if (StringUtils.isNotBlank(cliInstallation)) {
+				// Unified tool: the Sec1 CLI installation carries the sec1-sast
+				// engine alongside sec1-cli.
+				Sec1CliInstallation cli = findCliInstallation();
+				executable = cli.forNode(node, listener).forEnvironment(envForCli).getSastExecutable(launcherForCli);
+			} else {
+				// Legacy per-scan tool (configurations written before cliInstallation).
+				Sec1SastInstallation selected = null;
+				for (Sec1SastInstallation inst : getMyDescriptor().getSastInstallations()) {
+					if (inst.getName().equals(sastInstallation)) {
+						selected = inst;
+						break;
+					}
+				}
+				if (selected == null) {
+					throw new AbortException(getErrorMessageInAnsi(
+							"Sec1 SAST installation '" + sastInstallation + "' not found. "
+									+ "Check Manage Jenkins > Tools."));
+				}
+				executable = selected.forNode(node, listener).forEnvironment(envForCli).getExecutable(launcherForCli);
+			}
 		} catch (IOException ex) {
 			throw new AbortException(getErrorMessageInAnsi(
 					"Failed to resolve sec1-sast executable on agent: " + ex.getMessage()));
@@ -535,8 +616,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 					"sastIncrementalScan is ignored in CLI mode.", "r");
 		}
 
+		// Surface the engine version in every scan log so it is always clear
+		// which engine build produced the findings (the bucket-distributed CLI
+		// can drift from the server engine; see sastscanner/RELEASING.md).
+		String engineVersion = resolveExecutableVersion(executable);
+
 		listener.getLogger().println("-------------------- Sec1 SAST Scan Config --------------------");
 		listener.getLogger().println("Mode                   CLI");
+		listener.getLogger().println("Engine Version         "
+				+ (StringUtils.isBlank(engineVersion) ? "unknown" : engineVersion));
 		listener.getLogger().println("SCM Url                " + scmUrl);
 		listener.getLogger().println("Tag                    " + resolvedTag);
 		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
@@ -970,7 +1058,12 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private int runScaScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
 			String workingDirectory, StringBuilder scmUrl, StringBuilder appName,
-			String branchName, String dashboardUrl, String resolvedTag) throws AbortException {
+			String branchName, String dashboardUrl, String resolvedTag)
+			throws AbortException, InterruptedException {
+
+		if (isScaSbomMode()) {
+			return runScaSbomScan(fossInstanceUrl, listener, sec1ApiKey, scmUrl, appName, branchName, resolvedTag);
+		}
 
 		printScaStartMessage(listener);
 
@@ -1210,6 +1303,357 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		return message;
 	}
 
+	/*
+	 * SBOM mode: uploads a pre-generated CycloneDX SBOM from the workspace to
+	 * /scan/file. Dependency resolution already happened in the build (with
+	 * the build's own registry credentials), so the Sec1 server never needs
+	 * SCM access or reachability to private artifact registries. The endpoint
+	 * responds synchronously with the vulnerability counts - no polling.
+	 */
+	private int runScaSbomScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
+			StringBuilder scmUrl, StringBuilder appName, String branchName, String resolvedTag)
+			throws AbortException, InterruptedException {
+
+		printScaStartMessage(listener);
+
+		if (workspaceForCli == null) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"SCA SBOM mode requires a workspace. Run this step on an agent."));
+		}
+		if (StringUtils.isBlank(sbomFile)) {
+			// No pre-generated SBOM: let the Sec1 CLI generate and upload it.
+			return runScaSbomViaCli(fossInstanceUrl, listener, sec1ApiKey, scmUrl, branchName, resolvedTag);
+		}
+
+		byte[] sbomBytes;
+		String sbomFileName;
+		try {
+			FilePath sbom = workspaceForCli.child(sbomFile);
+			if (!sbom.exists()) {
+				throw new AbortException(getErrorMessageInAnsi("SBOM file not found in workspace: " + sbomFile
+						+ ". Generate it before this step (e.g. mvn cyclonedx:makeAggregateBom)."));
+			}
+			sbomFileName = sbom.getName();
+			try (InputStream in = sbom.read(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+				byte[] buffer = new byte[8192];
+				int read;
+				while ((read = in.read(buffer)) != -1) {
+					out.write(buffer, 0, read);
+				}
+				sbomBytes = out.toByteArray();
+			}
+		} catch (AbortException ex) {
+			throw ex;
+		} catch (IOException | InterruptedException ex) {
+			throw new AbortException(getErrorMessageInAnsi("Unable to read SBOM file: " + ex.getMessage()));
+		}
+
+		JSONObject requestJson = new JSONObject();
+		requestJson.put("source", "jenkins");
+		requestJson.put("location", scmUrl.toString());
+		requestJson.put("appName", appName.toString());
+		requestJson.put("tag", resolvedTag);
+		requestJson.put("dirScan", false);
+		// Explicit subAssetType keeps asset classification AND tells the server
+		// to scan the uploaded SBOM. Without it the server derives the URL type
+		// itself and, when the user has a stored SCM token, diverts to a clone
+		// scan - defeating the purpose of SBOM mode.
+		requestJson.put("subAssetType", deriveSubAssetType(scmUrl.toString()));
+		if (StringUtils.isNotBlank(branchName)) {
+			requestJson.put("branch", getSanitizedBranchName(branchName));
+		}
+
+		listener.getLogger().println("-------------------- Sec1 SCA Scan Config --------------------");
+		listener.getLogger().println("Mode                   SBOM UPLOAD");
+		listener.getLogger().println("SBOM File              " + sbomFile);
+		listener.getLogger().println("SCM Url                " + scmUrl);
+		listener.getLogger().println("Tag                    " + resolvedTag);
+		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
+		if (asyncScan) {
+			printLogs(listener.getLogger(),
+					"asyncScan is ignored in SBOM mode (the scan responds synchronously).", "r");
+		}
+
+		String boundary = "----Sec1SbomBoundary" + System.currentTimeMillis();
+		byte[] body;
+		try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+			String filePartHeader = "--" + boundary + "\r\n"
+					+ "Content-Disposition: form-data; name=\"file\"; filename=\"" + sbomFileName + "\"\r\n"
+					+ "Content-Type: application/json\r\n\r\n";
+			String requestPart = "\r\n--" + boundary + "\r\n"
+					+ "Content-Disposition: form-data; name=\"request\"\r\n\r\n"
+					+ requestJson.toString() + "\r\n--" + boundary + "--\r\n";
+			out.write(filePartHeader.getBytes(StandardCharsets.UTF_8));
+			out.write(sbomBytes);
+			out.write(requestPart.getBytes(StandardCharsets.UTF_8));
+			body = out.toByteArray();
+		} catch (IOException ex) {
+			throw new AbortException(getErrorMessageInAnsi("Failed to build SBOM upload request: " + ex.getMessage()));
+		}
+
+		String scanUrl = fossInstanceUrl + API_CONTEXT + "/foss/scan/file";
+		int result = 0;
+		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(scanUrl))) {
+			HttpPost post = objectFactory.createHttpPost(scanUrl);
+			post.setHeader(API_KEY_HEADER, sec1ApiKey);
+			post.setHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+			post.setHeader("Accept", "application/json");
+			post.setEntity(new ByteArrayEntity(body));
+
+			try (CloseableHttpResponse response = client.execute(post)) {
+				int statusCode = response.getStatusLine().getStatusCode();
+				String content = response.getEntity() != null
+						? EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8)
+						: "";
+				if (statusCode != 200) {
+					throw new AbortException(getErrorMessageInAnsi(
+							"SBOM scan failed with HTTP " + statusCode + ". " + content));
+				}
+				JSONObject responseJson = new JSONObject(content);
+				listener.getLogger().println("-------------------- Sec1 SCA Scan Result --------------------");
+				if (StringUtils.isNotBlank(responseJson.optString("errorMessage"))) {
+					listener.getLogger().println("Status                 FAILURE");
+					throw new AbortException(getErrorMessageInAnsi(
+							"SBOM scan error: " + responseJson.optString("errorMessage")));
+				}
+				if (StringUtils.equalsIgnoreCase("FAILED", responseJson.optString("status"))) {
+					listener.getLogger().println("Status                 FAILURE");
+					throw new AbortException(getErrorMessageInAnsi("Sec1 SCA Security Scan Finished with failures"));
+				}
+
+				JSONObject counts = responseJson.optJSONObject("cveCountDetails");
+				int critical = counts != null ? counts.optInt("CRITICAL") : 0;
+				int high = counts != null ? counts.optInt("HIGH") : 0;
+				int medium = counts != null ? counts.optInt("MEDIUM") : 0;
+				int low = counts != null ? counts.optInt("LOW") : 0;
+
+				listener.getLogger().println("Vulnerabilities        Critical: " + critical + ", High: " + high
+						+ ", Medium: " + medium + ", Low: " + low);
+				listener.getLogger().println("Report Url             " + responseJson.optString("reportUrl"));
+
+				result = applyScaThresholdChecks(critical, high, medium, low, listener);
+			}
+		} catch (AbortException ex) {
+			printScaEndMessage(listener);
+			throw ex;
+		} catch (IOException ex) {
+			logger.error("SBOM scan failed with IOException", ex);
+			printScaEndMessage(listener);
+			throw new AbortException(
+					getErrorMessageInAnsi("Attention: Build Failed. Check configuration. " + ex.getMessage()));
+		} catch (URISyntaxException e) {
+			throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
+		}
+
+		printScaEndMessage(listener);
+		return result;
+	}
+
+	private Sec1CliInstallation findCliInstallation() throws AbortException {
+		String name = StringUtils.isNotBlank(cliInstallation) ? cliInstallation : scaInstallation;
+		for (Sec1CliInstallation inst : getMyDescriptor().getCliInstallations()) {
+			if (inst.getName().equals(name)) {
+				return inst;
+			}
+		}
+		throw new AbortException(getErrorMessageInAnsi(
+				"Sec1 CLI installation '" + name + "' not found. Check Manage Jenkins > Tools."));
+	}
+
+	private String resolveExecutableVersion(String executable) {
+		try {
+			ByteArrayOutputStream buf = new ByteArrayOutputStream();
+			launcherForCli.launch().cmds(executable, "--version").stdout(buf).stderr(buf).quiet(true).join();
+			String firstNonBlank = "";
+			// Prefer the line that names the version - some CLIs print a
+			// banner first.
+			for (String line : buf.toString(StandardCharsets.UTF_8.name()).split("\r?\n")) {
+				String trimmed = StringUtils.trim(line);
+				if (StringUtils.isBlank(trimmed)) {
+					continue;
+				}
+				if (StringUtils.containsIgnoreCase(trimmed, "version")
+						|| StringUtils.containsIgnoreCase(trimmed, "sec1-cli")) {
+					return trimmed;
+				}
+				if (StringUtils.isBlank(firstNonBlank)) {
+					firstNonBlank = trimmed;
+				}
+			}
+			return firstNonBlank;
+		} catch (IOException | InterruptedException ex) {
+			logger.info("Unable to determine CLI version for {}", executable);
+			return "";
+		}
+	}
+
+	private String deriveSubAssetType(String url) {
+		String lower = StringUtils.lowerCase(StringUtils.defaultString(url));
+		if (lower.contains("github")) {
+			return "github";
+		}
+		if (lower.contains("gitlab")) {
+			return "gitlab";
+		}
+		if (lower.contains("bitbucket")) {
+			return "bitbucket";
+		}
+		if (lower.contains("dev.azure") || lower.contains("visualstudio")) {
+			return "azure-scm";
+		}
+		return "archive";
+	}
+
+	private int applyScaThresholdChecks(int critical, int high, int medium, int low, TaskListener listener)
+			throws AbortException {
+		int result = 0;
+		if (applyThreshold && threshold != null) {
+			if (critical != 0 && threshold.getCriticalThreshold() != null
+					&& NumberUtils.isDigits(threshold.getCriticalThreshold())
+					&& critical >= Integer.parseInt(threshold.getCriticalThreshold())) {
+				result = failBuildOnThresholdBreach("Critical Vulnerability Threshold breached. Found: " + critical
+						+ ", Allowed: " + threshold.getCriticalThreshold(), listener, threshold);
+			}
+			if (high != 0 && threshold.getHighThreshold() != null && NumberUtils.isDigits(threshold.getHighThreshold())
+					&& high >= Integer.parseInt(threshold.getHighThreshold())) {
+				result = failBuildOnThresholdBreach("High Vulnerability Threshold breached. Found: " + high
+						+ ", Allowed: " + threshold.getHighThreshold(), listener, threshold);
+			}
+			if (medium != 0 && threshold.getMediumThreshold() != null
+					&& NumberUtils.isDigits(threshold.getMediumThreshold())
+					&& medium >= Integer.parseInt(threshold.getMediumThreshold())) {
+				result = failBuildOnThresholdBreach("Medium Vulnerability Threshold breached. Found: " + medium
+						+ ", Allowed: " + threshold.getMediumThreshold(), listener, threshold);
+			}
+			if (low != 0 && threshold.getLowThreshold() != null && NumberUtils.isDigits(threshold.getLowThreshold())
+					&& low >= Integer.parseInt(threshold.getLowThreshold())) {
+				result = failBuildOnThresholdBreach("Low Vulnerability Threshold breached. Found: " + low
+						+ ", Allowed: " + threshold.getLowThreshold(), listener, threshold);
+			}
+		}
+		return result;
+	}
+
+	/*
+	 * SBOM mode without a pre-generated file: run the Sec1 CLI (a Jenkins Tool,
+	 * auto-downloaded per agent) which detects the ecosystem, generates a
+	 * CycloneDX SBOM with the agent's own toolchain and registry credentials,
+	 * and uploads it. The plugin reads the counts back from SEC1_RESULT_FILE
+	 * and applies the configured thresholds itself.
+	 */
+	private int runScaSbomViaCli(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
+			StringBuilder scmUrl, String branchName, String resolvedTag)
+			throws AbortException, InterruptedException {
+
+		if (launcherForCli == null) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"SCA SBOM mode requires a node. Run this step on an agent."));
+		}
+		if (StringUtils.isBlank(cliInstallation) && StringUtils.isBlank(scaInstallation)) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"CLI scan mode is enabled but no Sec1 CLI installation is selected. Configure one under "
+							+ "Manage Jenkins > Tools and set cliInstallation (or provide a pre-generated "
+							+ "SBOM via sbomFile)."));
+		}
+
+		String executable;
+		try {
+			hudson.model.Computer computer = workspaceForCli.toComputer();
+			Node node = computer == null ? null : computer.getNode();
+			if (node == null) {
+				throw new AbortException(getErrorMessageInAnsi("Unable to resolve agent node for Sec1 CLI execution."));
+			}
+			Sec1CliInstallation resolved = findCliInstallation().forNode(node, listener).forEnvironment(envForCli);
+			executable = resolved.getExecutable(launcherForCli);
+		} catch (IOException ex) {
+			throw new AbortException(getErrorMessageInAnsi(
+					"Failed to resolve sec1-cli executable on agent: " + ex.getMessage()));
+		}
+
+		String cliVersion = resolveExecutableVersion(executable);
+
+		listener.getLogger().println("-------------------- Sec1 SCA Scan Config --------------------");
+		listener.getLogger().println("Mode                   SBOM (generated by Sec1 CLI on agent)");
+		listener.getLogger().println("CLI Version            "
+				+ (StringUtils.isBlank(cliVersion) ? "unknown" : cliVersion));
+		listener.getLogger().println("SCM Url                " + scmUrl);
+		listener.getLogger().println("Tag                    " + resolvedTag);
+		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
+		if (asyncScan) {
+			printLogs(listener.getLogger(),
+					"asyncScan is ignored in SBOM mode (the scan responds synchronously).", "r");
+		}
+
+		FilePath resultFile = workspaceForCli.child("sec1-sca-result.properties");
+		ArgumentListBuilder args = new ArgumentListBuilder();
+		args.add(executable);
+		args.add("scan");
+		args.add("--generate-sbom");
+		args.add("-s").add("jenkins");
+		if (StringUtils.isNotBlank(scmUrl.toString())) {
+			args.add("--scmurl").add(scmUrl.toString());
+		}
+		args.add("--tag").add(resolvedTag);
+		if (StringUtils.isNotBlank(branchName)) {
+			args.add("--branch").add(getSanitizedBranchName(branchName));
+		}
+
+		EnvVars cliEnv = new EnvVars(envForCli == null ? new EnvVars() : envForCli);
+		cliEnv.put("SEC1_API_KEY", sec1ApiKey);
+		cliEnv.put("SEC1_INSTANCE_URL", fossInstanceUrl.toString());
+		cliEnv.put("SEC1_RESULT_FILE", resultFile.getRemote());
+
+		int exitCode;
+		try {
+			exitCode = launcherForCli.launch()
+					.cmds(args)
+					.envs(cliEnv)
+					.pwd(workspaceForCli)
+					.stdout(listener.getLogger())
+					.stderr(listener.getLogger())
+					.join();
+		} catch (IOException ex) {
+			throw new AbortException(getErrorMessageInAnsi("sec1-cli failed to start: " + ex.getMessage()));
+		}
+
+		int result = 0;
+		try {
+			if (exitCode != 0) {
+				throw new AbortException(getErrorMessageInAnsi(
+						"sec1-cli exited with code " + exitCode + ". Failing the build."));
+			}
+			if (!resultFile.exists()) {
+				throw new AbortException(getErrorMessageInAnsi(
+						"sec1-cli finished but produced no result file. Failing the build."));
+			}
+			java.util.Properties props = new java.util.Properties();
+			try (InputStream in = resultFile.read()) {
+				props.load(in);
+			}
+			int critical = NumberUtils.toInt(props.getProperty("critical"), 0);
+			int high = NumberUtils.toInt(props.getProperty("high"), 0);
+			int medium = NumberUtils.toInt(props.getProperty("medium"), 0);
+			int low = NumberUtils.toInt(props.getProperty("low"), 0);
+
+			result = applyScaThresholdChecks(critical, high, medium, low, listener);
+		} catch (AbortException ex) {
+			printScaEndMessage(listener);
+			throw ex;
+		} catch (IOException ex) {
+			printScaEndMessage(listener);
+			throw new AbortException(getErrorMessageInAnsi("Unable to read sec1-cli result: " + ex.getMessage()));
+		} finally {
+			try {
+				resultFile.delete();
+			} catch (IOException | InterruptedException ignored) {
+				// best effort cleanup
+			}
+		}
+
+		printScaEndMessage(listener);
+		return result;
+	}
+
 	private int failBuildOnThresholdBreach(String message, TaskListener listener, Threshold threshold)
 			throws AbortException {
 		if (StringUtils.isNotBlank(threshold.getStatusAction())) {
@@ -1243,6 +1687,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		@CopyOnWrite
 		private volatile Sec1SastInstallation[] sastInstallations = new Sec1SastInstallation[0];
+
+		private volatile Sec1CliInstallation[] cliInstallations = new Sec1CliInstallation[0];
 
 		public DescriptorImpl() {
 			super(SecOneScannerPlugin.class);
@@ -1280,10 +1726,53 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			return items;
 		}
 
+		public Sec1CliInstallation[] getCliInstallations() {
+			return cliInstallations == null ? new Sec1CliInstallation[0] : cliInstallations.clone();
+		}
+
+		public void setCliInstallations(Sec1CliInstallation... installations) {
+			this.cliInstallations = installations == null ? new Sec1CliInstallation[0] : installations.clone();
+			save();
+		}
+
+		public boolean hasCliInstallations() {
+			return cliInstallations != null && cliInstallations.length > 0;
+		}
+
+		public ListBoxModel doFillScaInstallationItems() {
+			ListBoxModel items = new ListBoxModel();
+			for (Sec1CliInstallation inst : getCliInstallations()) {
+				items.add(inst.getName(), inst.getName());
+			}
+			return items;
+		}
+
+		public ListBoxModel doFillCliInstallationItems() {
+			ListBoxModel items = new ListBoxModel();
+			for (Sec1CliInstallation inst : getCliInstallations()) {
+				items.add(inst.getName(), inst.getName());
+			}
+			return items;
+		}
+
 		public ListBoxModel doFillSastModeItems() {
 			ListBoxModel items = new ListBoxModel();
 			items.add("API (default)", "api");
 			items.add("CLI (run on agent)", "cli");
+			return items;
+		}
+
+		public ListBoxModel doFillScanModeItems() {
+			ListBoxModel items = new ListBoxModel();
+			items.add("API (default) - scans run on the Sec1 server", "api");
+			items.add("CLI - scans run on the agent (private SCM / registries)", "cli");
+			return items;
+		}
+
+		public ListBoxModel doFillScaModeItems() {
+			ListBoxModel items = new ListBoxModel();
+			items.add("API (default)", "api");
+			items.add("SBOM upload (private registries)", "sbom");
 			return items;
 		}
 	}

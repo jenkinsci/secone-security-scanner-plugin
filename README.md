@@ -143,18 +143,41 @@ Whether SCA (Software Composition Analysis) scan needs to be executed for the co
 
 Whether SAST (Static Application Security Testing) scan needs to be executed for the configured git repository.
 
-#### `sastMode` (optional, default: `api`)
+#### `scanMode` (optional, default: `api`)
 
-Where the SAST scan runs. Two values:
+Where scans run — one setting for both SCA and SAST:
 
-- `api` (default) — the Sec1 server clones the repo and runs the scan. Existing behavior.
-- `cli` — the scan runs on the Jenkins agent via the `sec1-sast` binary, which uploads the report to the Sec1 service. Useful when the Sec1 server cannot reach your repository (private SCM, air-gapped network).
+- `api` (default) — the Sec1 server clones the repo and runs both scans on its side. Existing behavior.
+- `cli` — everything runs on the Jenkins agent, so neither your code nor your registry credentials leave the network:
+  - **SAST** analyzes the workspace locally via the `sec1-sast` engine (see `sastInstallation`) and uploads only the findings report.
+  - **SCA** uploads a CycloneDX SBOM instead of having the server resolve dependencies — either one your build generated (`sbomFile`) or one generated on the agent by the Sec1 CLI (`scaInstallation`). Works behind private artifact registries (Nexus, Artifactory, private npm).
 
-In CLI mode `asyncScan` and `sastIncrementalScan` are ignored (the CLI runs synchronously and does not currently support incremental scans).
+In CLI mode `asyncScan` and `sastIncrementalScan` are ignored (scans run synchronously on the agent). Every CLI-mode scan logs the engine/CLI version used.
 
-#### `sastInstallation` (required when `sastMode: 'cli'`)
+```groovy
+sec1Security(
+    apiCredentialsId: 'SEC1_API_KEY',
+    scanMode: 'cli',
+    scaInstallation: 'sec1-cli',
+    sastInstallation: 'sec1-sast'
+)
+```
 
-The name of a Sec1 SAST installation configured under **Manage Jenkins → Tools → Sec1 SAST CLI**. Each installation either points to a pre-installed `sec1-sast` binary on the agent or uses the auto-installer to download it from sec1.io on first use.
+(The older per-scan `scaMode` / `sastMode` parameters still work for existing configurations but are deprecated in favor of `scanMode`.)
+
+#### `cliInstallation` (required for `scanMode: 'cli'`)
+
+Name of a **Sec1 CLI** installation (Manage Jenkins → Tools → Sec1 CLI → Add, with the "Install from sec1.io" installer). One installation serves both scans: it is auto-downloaded to each agent (refreshed daily) and carries the `sec1-cli` binary (SBOM generation via cdxgen, all ecosystems, using the agent's own toolchain and registry credentials) and the `sec1-sast` engine (local SAST analysis, only the report is uploaded).
+
+```groovy
+sec1Security(
+    apiCredentialsId: 'SEC1_API_KEY',
+    scanMode: 'cli',
+    cliInstallation: 'sec1-cli'
+)
+```
+
+Pipelines that already generate a CycloneDX SBOM in the build can pass it with the `sbomFile` parameter (workspace-relative JSON path); the plugin then uploads that file for SCA and no generation runs. The older `scaInstallation` / `sastInstallation` parameters still work but are deprecated in favor of `cliInstallation`.
 
 #### `sastIncrementalScan` (optional, default: `false`)
 
