@@ -102,11 +102,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private String scmUrl;
 
+	private String scanMode;
+
 	private String scaMode;
 
 	private String sbomFile;
 
 	private String scaInstallation;
+
+	private String cliInstallation;
 
 	private boolean asyncScan;
 
@@ -203,10 +207,21 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.scmUrl = scmUrl;
 	}
 
+	public String getScanMode() {
+		return StringUtils.isBlank(scanMode) ? "api" : scanMode;
+	}
+
+	@DataBoundSetter
+	public void setScanMode(String scanMode) {
+		this.scanMode = scanMode;
+	}
+
+	/* Deprecated: per-scan mode. Use scanMode, which drives both scans. */
 	public String getScaMode() {
 		return StringUtils.isBlank(scaMode) ? "api" : scaMode;
 	}
 
+	@Deprecated
 	@DataBoundSetter
 	public void setScaMode(String scaMode) {
 		this.scaMode = scaMode;
@@ -221,10 +236,21 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.sbomFile = sbomFile;
 	}
 
+	public String getCliInstallation() {
+		return cliInstallation;
+	}
+
+	@DataBoundSetter
+	public void setCliInstallation(String cliInstallation) {
+		this.cliInstallation = cliInstallation;
+	}
+
+	/* Deprecated: use cliInstallation, which serves both SCA and SAST. */
 	public String getScaInstallation() {
 		return scaInstallation;
 	}
 
+	@Deprecated
 	@DataBoundSetter
 	public void setScaInstallation(String scaInstallation) {
 		this.scaInstallation = scaInstallation;
@@ -266,12 +292,18 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.sastInstallation = sastInstallation;
 	}
 
+	private boolean isCliScanMode() {
+		return "cli".equalsIgnoreCase(getScanMode());
+	}
+
 	private boolean isSastCliMode() {
-		return "cli".equalsIgnoreCase(getSastMode());
+		// scanMode: 'cli' switches both scans; legacy sastMode kept for
+		// configurations written before the single flag existed.
+		return isCliScanMode() || "cli".equalsIgnoreCase(getSastMode());
 	}
 
 	private boolean isScaSbomMode() {
-		return "sbom".equalsIgnoreCase(getScaMode());
+		return isCliScanMode() || "sbom".equalsIgnoreCase(getScaMode());
 	}
 
 	private boolean isAsyncFireAndForget() {
@@ -535,23 +567,10 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			throw new AbortException(getErrorMessageInAnsi(
 					"SAST CLI mode requires a workspace and a node. Run this step on an agent."));
 		}
-		if (StringUtils.isBlank(sastInstallation)) {
+		if (StringUtils.isBlank(cliInstallation) && StringUtils.isBlank(sastInstallation)) {
 			throw new AbortException(getErrorMessageInAnsi(
-					"SAST CLI mode is enabled but no Sec1 SAST installation is selected. "
-							+ "Configure one under Manage Jenkins > Tools."));
-		}
-
-		Sec1SastInstallation selected = null;
-		for (Sec1SastInstallation inst : getMyDescriptor().getSastInstallations()) {
-			if (inst.getName().equals(sastInstallation)) {
-				selected = inst;
-				break;
-			}
-		}
-		if (selected == null) {
-			throw new AbortException(getErrorMessageInAnsi(
-					"Sec1 SAST installation '" + sastInstallation + "' not found. "
-							+ "Check Manage Jenkins > Tools."));
+					"CLI scan mode is enabled but no Sec1 CLI installation is selected. "
+							+ "Configure one under Manage Jenkins > Tools and set cliInstallation."));
 		}
 
 		String executable;
@@ -562,8 +581,27 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				throw new AbortException(getErrorMessageInAnsi(
 						"Unable to resolve agent node for SAST CLI execution."));
 			}
-			Sec1SastInstallation resolved = selected.forNode(node, listener).forEnvironment(envForCli);
-			executable = resolved.getExecutable(launcherForCli);
+			if (StringUtils.isNotBlank(cliInstallation)) {
+				// Unified tool: the Sec1 CLI installation carries the sec1-sast
+				// engine alongside sec1-cli.
+				Sec1CliInstallation cli = findCliInstallation();
+				executable = cli.forNode(node, listener).forEnvironment(envForCli).getSastExecutable(launcherForCli);
+			} else {
+				// Legacy per-scan tool (configurations written before cliInstallation).
+				Sec1SastInstallation selected = null;
+				for (Sec1SastInstallation inst : getMyDescriptor().getSastInstallations()) {
+					if (inst.getName().equals(sastInstallation)) {
+						selected = inst;
+						break;
+					}
+				}
+				if (selected == null) {
+					throw new AbortException(getErrorMessageInAnsi(
+							"Sec1 SAST installation '" + sastInstallation + "' not found. "
+									+ "Check Manage Jenkins > Tools."));
+				}
+				executable = selected.forNode(node, listener).forEnvironment(envForCli).getExecutable(launcherForCli);
+			}
 		} catch (IOException ex) {
 			throw new AbortException(getErrorMessageInAnsi(
 					"Failed to resolve sec1-sast executable on agent: " + ex.getMessage()));
@@ -1411,12 +1449,38 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		return result;
 	}
 
+	private Sec1CliInstallation findCliInstallation() throws AbortException {
+		String name = StringUtils.isNotBlank(cliInstallation) ? cliInstallation : scaInstallation;
+		for (Sec1CliInstallation inst : getMyDescriptor().getCliInstallations()) {
+			if (inst.getName().equals(name)) {
+				return inst;
+			}
+		}
+		throw new AbortException(getErrorMessageInAnsi(
+				"Sec1 CLI installation '" + name + "' not found. Check Manage Jenkins > Tools."));
+	}
+
 	private String resolveExecutableVersion(String executable) {
 		try {
 			ByteArrayOutputStream buf = new ByteArrayOutputStream();
 			launcherForCli.launch().cmds(executable, "--version").stdout(buf).stderr(buf).quiet(true).join();
-			return StringUtils.trim(StringUtils.substringBefore(
-					buf.toString(StandardCharsets.UTF_8.name()), "\n"));
+			String firstNonBlank = "";
+			// Prefer the line that names the version - some CLIs print a
+			// banner first.
+			for (String line : buf.toString(StandardCharsets.UTF_8.name()).split("\r?\n")) {
+				String trimmed = StringUtils.trim(line);
+				if (StringUtils.isBlank(trimmed)) {
+					continue;
+				}
+				if (StringUtils.containsIgnoreCase(trimmed, "version")
+						|| StringUtils.containsIgnoreCase(trimmed, "sec1-cli")) {
+					return trimmed;
+				}
+				if (StringUtils.isBlank(firstNonBlank)) {
+					firstNonBlank = trimmed;
+				}
+			}
+			return firstNonBlank;
 		} catch (IOException | InterruptedException ex) {
 			logger.info("Unable to determine CLI version for {}", executable);
 			return "";
@@ -1485,23 +1549,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			throw new AbortException(getErrorMessageInAnsi(
 					"SCA SBOM mode requires a node. Run this step on an agent."));
 		}
-		if (StringUtils.isBlank(scaInstallation)) {
+		if (StringUtils.isBlank(cliInstallation) && StringUtils.isBlank(scaInstallation)) {
 			throw new AbortException(getErrorMessageInAnsi(
-					"scaMode is 'sbom' but neither sbomFile nor scaInstallation is configured. Either point "
-							+ "sbomFile at a CycloneDX JSON generated by your build, or configure a Sec1 CLI "
-							+ "installation under Manage Jenkins > Tools and select it via scaInstallation."));
-		}
-
-		Sec1CliInstallation selected = null;
-		for (Sec1CliInstallation inst : getMyDescriptor().getCliInstallations()) {
-			if (inst.getName().equals(scaInstallation)) {
-				selected = inst;
-				break;
-			}
-		}
-		if (selected == null) {
-			throw new AbortException(getErrorMessageInAnsi("Sec1 CLI installation '" + scaInstallation
-					+ "' not found. Check Manage Jenkins > Tools."));
+					"CLI scan mode is enabled but no Sec1 CLI installation is selected. Configure one under "
+							+ "Manage Jenkins > Tools and set cliInstallation (or provide a pre-generated "
+							+ "SBOM via sbomFile)."));
 		}
 
 		String executable;
@@ -1511,7 +1563,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			if (node == null) {
 				throw new AbortException(getErrorMessageInAnsi("Unable to resolve agent node for Sec1 CLI execution."));
 			}
-			Sec1CliInstallation resolved = selected.forNode(node, listener).forEnvironment(envForCli);
+			Sec1CliInstallation resolved = findCliInstallation().forNode(node, listener).forEnvironment(envForCli);
 			executable = resolved.getExecutable(launcherForCli);
 		} catch (IOException ex) {
 			throw new AbortException(getErrorMessageInAnsi(
@@ -1695,10 +1747,25 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			return items;
 		}
 
+		public ListBoxModel doFillCliInstallationItems() {
+			ListBoxModel items = new ListBoxModel();
+			for (Sec1CliInstallation inst : getCliInstallations()) {
+				items.add(inst.getName(), inst.getName());
+			}
+			return items;
+		}
+
 		public ListBoxModel doFillSastModeItems() {
 			ListBoxModel items = new ListBoxModel();
 			items.add("API (default)", "api");
 			items.add("CLI (run on agent)", "cli");
+			return items;
+		}
+
+		public ListBoxModel doFillScanModeItems() {
+			ListBoxModel items = new ListBoxModel();
+			items.add("API (default) - scans run on the Sec1 server", "api");
+			items.add("CLI - scans run on the agent (private SCM / registries)", "cli");
 			return items;
 		}
 

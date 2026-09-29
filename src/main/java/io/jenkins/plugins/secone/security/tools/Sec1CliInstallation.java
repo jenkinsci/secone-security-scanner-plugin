@@ -48,38 +48,50 @@ public class Sec1CliInstallation extends ToolInstallation
 	}
 
 	public String getExecutable(@NonNull Launcher launcher) throws IOException, InterruptedException {
+		return resolve(launcher, false);
+	}
+
+	/* The same installation also carries the sec1-sast engine binary. */
+	public String getSastExecutable(@NonNull Launcher launcher) throws IOException, InterruptedException {
+		return resolve(launcher, true);
+	}
+
+	private String resolve(Launcher launcher, boolean sast) throws IOException, InterruptedException {
 		VirtualChannel channel = launcher.getChannel();
 		if (channel == null) {
-			throw new IOException("Unable to resolve sec1-cli executable: launcher has no channel.");
+			throw new IOException("Unable to resolve Sec1 CLI executable: launcher has no channel.");
 		}
 		final String home = Util.fixEmptyAndTrim(getHome());
 		if (home == null) {
-			throw new IOException("sec1-cli installation '" + getName() + "' has no home directory set.");
+			throw new IOException("Sec1 CLI installation '" + getName() + "' has no home directory set.");
 		}
-		return channel.call(new ResolveExecutable(home));
+		return channel.call(new ResolveExecutable(home, sast));
 	}
 
 	private static class ResolveExecutable extends MasterToSlaveCallable<String, IOException> {
 		private static final long serialVersionUID = 1L;
 		private final String home;
+		private final boolean sast;
 
-		ResolveExecutable(String home) {
+		ResolveExecutable(String home, boolean sast) {
 			this.home = home;
+			this.sast = sast;
 		}
 
 		@Override
 		public String call() throws IOException {
-			CliPlatform platform = CliPlatform.current();
+			String fileName = sast ? Platform.current().getInstalledFileName()
+					: CliPlatform.current().getInstalledFileName();
 			java.io.File homeDir = new java.io.File(home);
-			java.io.File installed = new java.io.File(homeDir, platform.getInstalledFileName());
+			java.io.File installed = new java.io.File(homeDir, fileName);
 			if (installed.isFile()) {
 				return installed.getAbsolutePath();
 			}
-			if (homeDir.isFile()) {
+			if (!sast && homeDir.isFile()) {
 				return homeDir.getAbsolutePath();
 			}
-			throw new IOException("sec1-cli binary not found under " + home
-					+ " (looked for " + platform.getInstalledFileName() + ").");
+			throw new IOException("Sec1 CLI binary not found under " + home
+					+ " (looked for " + fileName + ").");
 		}
 	}
 

@@ -44,17 +44,24 @@ public class Sec1CliInstaller extends ToolInstaller {
 		}
 
 		CliPlatform platform = channel.call(new GetPlatform());
+		Platform sastPlatform = channel.call(new GetSastPlatform());
 		URL downloadUrl = new URL(DOWNLOAD_BASE_URL + platform.getDownloadFileName());
+		URL sastDownloadUrl = new URL(DOWNLOAD_BASE_URL + sastPlatform.getDownloadFileName());
 
 		if (isUpToDate(expected)) {
 			return expected;
 		}
 
 		expected.mkdirs();
+		// One installation carries both binaries: sec1-cli (SCA/SBOM) and
+		// sec1-sast (SAST engine), so a single Tool entry serves both scans.
 		log.getLogger().println("Downloading sec1-cli from " + downloadUrl);
 		channel.call(new Downloader(downloadUrl, new File(expected.getRemote(), platform.getInstalledFileName())));
+		log.getLogger().println("Downloading sec1-sast from " + sastDownloadUrl);
+		channel.call(new Downloader(sastDownloadUrl,
+				new File(expected.getRemote(), sastPlatform.getInstalledFileName())));
 
-		expected.child(INSTALLED_FROM).write(downloadUrl.toString(), StandardCharsets.UTF_8.name());
+		expected.child(INSTALLED_FROM).write(downloadUrl + "\n" + sastDownloadUrl, StandardCharsets.UTF_8.name());
 		expected.child(TIMESTAMP_FILE).write(String.valueOf(Instant.now().toEpochMilli()), StandardCharsets.UTF_8.name());
 		return expected;
 	}
@@ -78,6 +85,15 @@ public class Sec1CliInstaller extends ToolInstaller {
 		@Override
 		public CliPlatform call() throws IOException {
 			return CliPlatform.current();
+		}
+	}
+
+	private static class GetSastPlatform extends MasterToSlaveCallable<Platform, IOException> {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+		public Platform call() throws IOException {
+			return Platform.current();
 		}
 	}
 

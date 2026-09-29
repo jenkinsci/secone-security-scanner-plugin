@@ -1,8 +1,0 @@
-<div>
-    Path to a CycloneDX SBOM (JSON), relative to the workspace. Used only when
-    <b>SCA Mode</b> is <b>SBOM upload</b>. Generate it earlier in the build, e.g.:
-    <pre>mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom -DoutputFormat=json</pre>
-    which produces <code>target/bom.json</code>. For npm use
-    <code>npx @cyclonedx/cyclonedx-npm</code>, for Gradle the
-    <code>org.cyclonedx.bom</code> plugin.
-</div>
