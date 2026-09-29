@@ -31,8 +31,10 @@ import org.jenkinsci.Symbol;
 import org.jenkinsci.plugins.plaincredentials.StringCredentials;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
+import org.kohsuke.stapler.verb.POST;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,6 +64,7 @@ import io.jenkins.plugins.secone.security.object.factory.ObjectFactory;
 import io.jenkins.plugins.secone.security.pojo.Threshold;
 import io.jenkins.plugins.secone.security.tools.Sec1CliInstallation;
 import io.jenkins.plugins.secone.security.tools.Sec1SastInstallation;
+import hudson.model.Item;
 import jenkins.model.Jenkins;
 import jenkins.tasks.SimpleBuildStep;
 
@@ -1718,8 +1721,13 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			return sastInstallations != null && sastInstallations.length > 0;
 		}
 
-		public ListBoxModel doFillSastInstallationItems() {
+		@POST
+		public ListBoxModel doFillSastInstallationItems(@AncestorInPath Item item) {
 			ListBoxModel items = new ListBoxModel();
+			if (item == null ? !Jenkins.get().hasPermission(Jenkins.ADMINISTER)
+					: !item.hasPermission(Item.CONFIGURE)) {
+				return items;
+			}
 			for (Sec1SastInstallation inst : getSastInstallations()) {
 				items.add(inst.getName(), inst.getName());
 			}
@@ -1739,38 +1747,63 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			return cliInstallations != null && cliInstallations.length > 0;
 		}
 
-		public ListBoxModel doFillScaInstallationItems() {
+		@POST
+		public ListBoxModel doFillScaInstallationItems(@AncestorInPath Item item) {
 			ListBoxModel items = new ListBoxModel();
+			if (item == null ? !Jenkins.get().hasPermission(Jenkins.ADMINISTER)
+					: !item.hasPermission(Item.CONFIGURE)) {
+				return items;
+			}
 			for (Sec1CliInstallation inst : getCliInstallations()) {
 				items.add(inst.getName(), inst.getName());
 			}
 			return items;
 		}
 
-		public ListBoxModel doFillCliInstallationItems() {
+		@POST
+		public ListBoxModel doFillCliInstallationItems(@AncestorInPath Item item) {
 			ListBoxModel items = new ListBoxModel();
+			if (item == null ? !Jenkins.get().hasPermission(Jenkins.ADMINISTER)
+					: !item.hasPermission(Item.CONFIGURE)) {
+				return items;
+			}
 			for (Sec1CliInstallation inst : getCliInstallations()) {
 				items.add(inst.getName(), inst.getName());
 			}
 			return items;
 		}
 
-		public ListBoxModel doFillSastModeItems() {
+		@POST
+		public ListBoxModel doFillSastModeItems(@AncestorInPath Item item) {
 			ListBoxModel items = new ListBoxModel();
+			if (item == null ? !Jenkins.get().hasPermission(Jenkins.ADMINISTER)
+					: !item.hasPermission(Item.CONFIGURE)) {
+				return items;
+			}
 			items.add("API (default)", "api");
 			items.add("CLI (run on agent)", "cli");
 			return items;
 		}
 
-		public ListBoxModel doFillScanModeItems() {
+		@POST
+		public ListBoxModel doFillScanModeItems(@AncestorInPath Item item) {
 			ListBoxModel items = new ListBoxModel();
+			if (item == null ? !Jenkins.get().hasPermission(Jenkins.ADMINISTER)
+					: !item.hasPermission(Item.CONFIGURE)) {
+				return items;
+			}
 			items.add("API (default) - scans run on the Sec1 server", "api");
 			items.add("CLI - scans run on the agent (private SCM / registries)", "cli");
 			return items;
 		}
 
-		public ListBoxModel doFillScaModeItems() {
+		@POST
+		public ListBoxModel doFillScaModeItems(@AncestorInPath Item item) {
 			ListBoxModel items = new ListBoxModel();
+			if (item == null ? !Jenkins.get().hasPermission(Jenkins.ADMINISTER)
+					: !item.hasPermission(Item.CONFIGURE)) {
+				return items;
+			}
 			items.add("API (default)", "api");
 			items.add("SBOM upload (private registries)", "sbom");
 			return items;
