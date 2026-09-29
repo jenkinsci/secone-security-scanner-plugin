@@ -38,6 +38,10 @@
 	<properties>
 		<!-- https://www.jenkins.io/doc/developer/plugin-development/choosing-jenkins-baseline/ -->
 		<jenkins.baseline>2.462</jenkins.baseline>
+		<!-- Modern JDKs disable implicit annotation processing; without this the
+		     hudson.Extension index is silently omitted and the plugin registers
+		     no extensions when built locally. -->
+		<maven.compiler.proc>full</maven.compiler.proc>
 		<jenkins.version>${jenkins.baseline}.1</jenkins.version>
 		<changelist>999999-SNAPSHOT</changelist>
 		<gitHubRepo>jenkinsci/secone-security-scanner-plugin</gitHubRepo>
