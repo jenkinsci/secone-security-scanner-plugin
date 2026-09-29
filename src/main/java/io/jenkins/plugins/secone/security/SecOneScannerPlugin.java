@@ -1309,6 +1309,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		requestJson.put("appName", appName.toString());
 		requestJson.put("tag", resolvedTag);
 		requestJson.put("dirScan", false);
+		// Explicit subAssetType keeps asset classification AND tells the server
+		// to scan the uploaded SBOM. Without it the server derives the URL type
+		// itself and, when the user has a stored SCM token, diverts to a clone
+		// scan - defeating the purpose of SBOM mode.
+		requestJson.put("subAssetType", deriveSubAssetType(scmUrl.toString()));
 		if (StringUtils.isNotBlank(branchName)) {
 			requestJson.put("branch", getSanitizedBranchName(branchName));
 		}
@@ -1397,6 +1402,23 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		printScaEndMessage(listener);
 		return result;
+	}
+
+	private String deriveSubAssetType(String url) {
+		String lower = StringUtils.lowerCase(StringUtils.defaultString(url));
+		if (lower.contains("github")) {
+			return "github";
+		}
+		if (lower.contains("gitlab")) {
+			return "gitlab";
+		}
+		if (lower.contains("bitbucket")) {
+			return "bitbucket";
+		}
+		if (lower.contains("dev.azure") || lower.contains("visualstudio")) {
+			return "azure-scm";
+		}
+		return "archive";
 	}
 
 	private int applyScaThresholdChecks(int critical, int high, int medium, int low, TaskListener listener)
