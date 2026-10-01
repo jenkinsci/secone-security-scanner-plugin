@@ -7,12 +7,12 @@
         <li><b>CLI</b> - everything runs on the Jenkins agent via the selected
             <b>Sec1 CLI Installation</b>, so nothing needs to leave your network:
             SAST analyzes the workspace locally and uploads only the report; SCA
-            generates a CycloneDX SBOM on the agent (with your own toolchain and
+            generates an SBOM on the agent (with your own toolchain and
             registry credentials) and uploads it. Works behind private SCMs and
             private artifact registries (Nexus, Artifactory, private npm).</li>
     </ul>
     The scan log always prints the engine/CLI version used, so it is clear which
-    build produced the findings. (Pipelines that already generate a CycloneDX
+    build produced the findings. (Pipelines that already generate an
     SBOM can pass it via the <code>sbomFile</code> parameter instead of CLI
     generation.)
 </div>

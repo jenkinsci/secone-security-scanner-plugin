@@ -156,7 +156,7 @@ Name of a **Sec1 CLI** tool installation (Manage Jenkins → Tools → Sec1 CLI)
 
 #### `sbomFile` (optional, CLI mode only)
 
-Workspace-relative path to a CycloneDX SBOM (JSON) your build already generates. When set, SCA uploads that file instead of generating one. Useful on air-gapped agents or when you keep an SBOM as a compliance artifact.
+Workspace-relative path to an SBOM file (JSON) your build already generates. When set, SCA uploads that file instead of generating one. Useful on air-gapped agents or when you keep an SBOM as a compliance artifact.
 
 #### `sastIncrementalScan` (optional, default: `false`)
 
@@ -196,7 +196,7 @@ The plugin polls every 10 seconds for the scan result and times out after 30 min
 By default both scans run on the Sec1 server, which clones your repository. With `scanMode: 'cli'` they run on the Jenkins agent instead — use this when the Sec1 server cannot reach your repository (private SCM, air-gapped network) or your dependencies live in a private registry (Nexus, Artifactory, private npm).
 
 - **SAST** analyzes the checked-out workspace with the `sec1-sast` engine and uploads only the findings report.
-- **SCA** generates a CycloneDX SBOM on the agent and uploads it. Dependencies are resolved with the agent's own toolchain and credentials (`settings.xml`, `.npmrc`, …), so private registries work without giving the Sec1 server access to them.
+- **SCA** resolves your dependencies on the agent, generates an SBOM with the Sec1 CLI and uploads it. Dependencies are resolved with the agent's own toolchain and credentials (`settings.xml`, `.npmrc`, …), so private registries work without giving the Sec1 server access to them.
 
 ### One-time setup
 

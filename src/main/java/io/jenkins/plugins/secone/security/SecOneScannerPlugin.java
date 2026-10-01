@@ -1347,7 +1347,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			FilePath sbom = workspaceForCli.child(sbomFile);
 			if (!sbom.exists()) {
 				throw new AbortException(getErrorMessageInAnsi("SBOM file not found in workspace: " + sbomFile
-						+ ". Generate it before this step (e.g. mvn cyclonedx:makeAggregateBom)."));
+						+ ". Generate it before this step, or remove sbomFile to let the Sec1 CLI generate it."));
 			}
 			sbomFileName = sbom.getName();
 			try (InputStream in = sbom.read(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {

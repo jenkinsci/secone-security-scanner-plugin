@@ -5,9 +5,9 @@
     "Install from sec1.io" installer; it is auto-downloaded to each agent
     (refreshed daily) and carries both binaries:
     <ul>
-        <li><b>sec1-cli</b> — generates a CycloneDX SBOM for the SCA scan
-            (via cdxgen, all ecosystems, using the agent's own toolchain and
-            registry credentials) and uploads it.</li>
+        <li><b>sec1-cli</b> — resolves the project's dependencies on the agent
+            (using the agent's own build tools and registry credentials),
+            generates an SBOM for the SCA scan and uploads it.</li>
         <li><b>sec1-sast</b> — the SAST engine that analyzes the workspace
             locally and uploads only the findings report.</li>
     </ul>
