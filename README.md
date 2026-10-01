@@ -205,6 +205,25 @@ By default both scans run on the Sec1 server, which clones your repository. With
 
    Without the build tool, generation falls back to reading the manifest directly, which captures only direct dependencies — vulnerabilities in transitive dependencies are missed. The scan log warns about this explicitly (see below).
 
+### Using a manually installed Sec1 CLI
+
+For agents that cannot download from sec1.io (air-gapped networks, pinned versions), install the binaries yourself and point the tool at them:
+
+1. Download the binaries for the agent's platform from `https://storage.googleapis.com/digitalassets-sec1/latest/` and place both in one directory, **renamed** as follows:
+
+   | Agent platform | Download | Rename to |
+   |---|---|---|
+   | Linux x64 | `sec1-cli-linux`, `sec1-sast-linux-amd64` | `sec1-cli`, `sec1-sast` |
+   | Linux arm64 | `sec1-cli-linux-arm64`, `sec1-sast-linux-arm64` | `sec1-cli`, `sec1-sast` |
+   | macOS | `sec1-cli-macos`, `sec1-sast-darwin-arm64` (or `-amd64`) | `sec1-cli`, `sec1-sast` |
+   | Windows | `sec1-cli-win.exe`, `sec1-sast-windows-amd64.exe` | `sec1-cli.exe`, `sec1-sast.exe` |
+
+   On Linux and macOS, make both executable (`chmod +x sec1-cli sec1-sast`).
+2. In **Manage Jenkins → Tools → Sec1 CLI installations**, add an installation, **untick Install automatically**, and set **Installation directory** to that directory.
+3. If agents use different paths (or platforms), keep the global value as a default and override it per agent under **Manage Nodes → *agent* → Configure → Node Properties → Tool Locations**.
+
+Each scan prints `CLI Version` and `Engine Version`, so you can confirm which binaries an agent used. Manually installed binaries are not refreshed automatically — update them when Sec1 releases a new version.
+
 ### Pipeline example
 
 Check out the repository before the scan and run the step inside it — CLI mode scans the files in the workspace:
