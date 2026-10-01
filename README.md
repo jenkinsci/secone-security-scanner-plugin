@@ -207,22 +207,45 @@ By default both scans run on the Sec1 server, which clones your repository. With
 
 ### Using a manually installed Sec1 CLI
 
-For agents that cannot download from sec1.io (air-gapped networks, pinned versions), install the binaries yourself and point the tool at them:
+For agents that cannot use the auto-installer (air-gapped networks, pinned versions, restricted egress), install the Sec1 CLI with the install script and point the tool installation at it.
 
-1. Download the binaries for the agent's platform from `https://storage.googleapis.com/digitalassets-sec1/latest/` and place both in one directory, **renamed** as follows:
+**1. Install on the agent**
 
-   | Agent platform | Download | Rename to |
-   |---|---|---|
-   | Linux x64 | `sec1-cli-linux`, `sec1-sast-linux-amd64` | `sec1-cli`, `sec1-sast` |
-   | Linux arm64 | `sec1-cli-linux-arm64`, `sec1-sast-linux-arm64` | `sec1-cli`, `sec1-sast` |
-   | macOS | `sec1-cli-macos`, `sec1-sast-darwin-arm64` (or `-amd64`) | `sec1-cli`, `sec1-sast` |
-   | Windows | `sec1-cli-win.exe`, `sec1-sast-windows-amd64.exe` | `sec1-cli.exe`, `sec1-sast.exe` |
+Linux / macOS:
 
-   On Linux and macOS, make both executable (`chmod +x sec1-cli sec1-sast`).
-2. In **Manage Jenkins → Tools → Sec1 CLI installations**, add an installation, **untick Install automatically**, and set **Installation directory** to that directory.
-3. If agents use different paths (or platforms), keep the global value as a default and override it per agent under **Manage Nodes → *agent* → Configure → Node Properties → Tool Locations**.
+```sh
+curl -fsSL https://storage.googleapis.com/digitalassets-sec1/latest/install.sh | sudo sh -s -- --dir /opt/sec1
+```
 
-Each scan prints `CLI Version` and `Engine Version`, so you can confirm which binaries an agent used. Manually installed binaries are not refreshed automatically — update them when Sec1 releases a new version.
+Windows: follow the manual steps below.
+
+The script detects the platform, downloads both binaries, verifies their SHA-256 checksums (aborting on any mismatch), installs them as `sec1-cli` and `sec1-sast`, and prints the directory to use in Jenkins.
+
+- **Air-gapped agents:** run the script on a connected machine with the agent's platform, then copy the directory to the agent:
+  `curl -fsSL …/install.sh | sh -s -- --dir ./sec1 --platform linux-amd64` (also `linux-arm64`, `darwin-amd64`, `darwin-arm64`).
+- **Internal mirror:** host the files from `https://storage.googleapis.com/digitalassets-sec1/latest/` in your artifact repository and set `SEC1_DOWNLOAD_URL` to its URL before running the script.
+
+**2. Configure Jenkins**
+
+In **Manage Jenkins → Tools → Sec1 CLI installations**, add an installation, **untick Install automatically**, and set **Installation directory** to the install directory (e.g. `/opt/sec1`). If agents use different paths or platforms, keep the global value as a default and override it per agent under **Manage Nodes → *agent* → Configure → Node Properties → Tool Locations**.
+
+Each scan prints `CLI Version` and `Engine Version`, so you can confirm which binaries an agent used. Manually installed binaries are not refreshed automatically — re-run the script to update.
+
+<details>
+<summary>Manual installation without the script (Windows, or as a backup)</summary>
+
+Download the binaries for the agent's platform from `https://storage.googleapis.com/digitalassets-sec1/latest/` and place both in one directory, **renamed** as follows:
+
+| Agent platform | Download | Rename to |
+|---|---|---|
+| Linux x64 | `sec1-cli-linux`, `sec1-sast-linux-amd64` | `sec1-cli`, `sec1-sast` |
+| Linux arm64 | `sec1-cli-linux-arm64`, `sec1-sast-linux-arm64` | `sec1-cli`, `sec1-sast` |
+| macOS | `sec1-cli-macos`, `sec1-sast-darwin-arm64` (or `-amd64`) | `sec1-cli`, `sec1-sast` |
+| Windows | `sec1-cli-win.exe`, `sec1-sast-windows-amd64.exe` | `sec1-cli.exe`, `sec1-sast.exe` |
+
+On Linux and macOS, make both executable (`chmod +x sec1-cli sec1-sast`). Checksums are published alongside the binaries in `SHA256SUMS.txt` and `sec1-cli-SHA256SUMS.txt`. Then configure Jenkins as in step 2.
+
+</details>
 
 ### Pipeline example
 
@@ -257,7 +280,7 @@ pipeline {
 
 - Every CLI-mode scan prints the engine/CLI version it ran (`Engine Version …`, `CLI Version …`), so you can tell which build produced the findings.
 - **Multi-module repositories:** one SBOM is generated and uploaded per package-manager location (each Maven module, each `package.json` directory, …), so the Sec1 dashboard shows findings per module. Thresholds apply to the combined totals.
-- **C/C++ repositories:** libraries vendored into the source tree (mbedTLS, zlib, FreeRTOS, lwIP, …) are identified from their version headers, compiled binaries and directory layout — the same fingerprinting the Sec1 server uses.
+- **C/C++ repositories:** third-party libraries vendored into the source tree are identified from their version headers, compiled binaries and directory layout — the same fingerprinting the Sec1 server uses.
 - **Incomplete SBOM warning:** if the agent cannot resolve dependencies (build tool missing, private registry unreachable), the log shows `SBOM may be INCOMPLETE …`. Treat findings from that run as a lower bound and fix the agent setup.
 - Output from the SBOM generator and build tools is kept out of the console and written to `sec1-sbom-generation.log` in the workspace; the last lines are shown automatically if generation fails.
 - `asyncScan` and `sastIncrementalScan` are ignored in CLI mode; scans run synchronously on the agent.
