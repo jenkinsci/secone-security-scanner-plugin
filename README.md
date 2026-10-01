@@ -147,37 +147,16 @@ Whether SAST (Static Application Security Testing) scan needs to be executed for
 
 Where scans run — one setting for both SCA and SAST:
 
-- `api` (default) — the Sec1 server clones the repo and runs both scans on its side. Existing behavior.
-- `cli` — everything runs on the Jenkins agent, so neither your code nor your registry credentials leave the network:
-  - **SAST** analyzes the workspace locally via the `sec1-sast` engine (see `sastInstallation`) and uploads only the findings report.
-  - **SCA** uploads a CycloneDX SBOM instead of having the server resolve dependencies — either one your build generated (`sbomFile`) or one generated on the agent by the Sec1 CLI (`scaInstallation`). Works behind private artifact registries (Nexus, Artifactory, private npm).
-
-In CLI mode `asyncScan` and `sastIncrementalScan` are ignored (scans run synchronously on the agent). Every CLI-mode scan logs the engine/CLI version used.
-
-```groovy
-sec1Security(
-    apiCredentialsId: 'SEC1_API_KEY',
-    scanMode: 'cli',
-    scaInstallation: 'sec1-cli',
-    sastInstallation: 'sec1-sast'
-)
-```
-
-(The older per-scan `scaMode` / `sastMode` parameters still work for existing configurations but are deprecated in favor of `scanMode`.)
+- `api` (default) — the Sec1 server clones the repository and runs both scans on its side.
+- `cli` — both scans run on the Jenkins agent, so neither your code nor your registry credentials leave the network. Requires `cliInstallation`. See [Running scans on the agent (CLI mode)](#running-scans-on-the-agent-cli-mode).
 
 #### `cliInstallation` (required for `scanMode: 'cli'`)
 
-Name of a **Sec1 CLI** installation (Manage Jenkins → Tools → Sec1 CLI → Add, with the "Install from sec1.io" installer). One installation serves both scans: it is auto-downloaded to each agent (refreshed daily) and carries the `sec1-cli` binary (SBOM generation via cdxgen, all ecosystems, using the agent's own toolchain and registry credentials) and the `sec1-sast` engine (local SAST analysis, only the report is uploaded).
+Name of a **Sec1 CLI** tool installation (Manage Jenkins → Tools → Sec1 CLI). One installation serves both scans.
 
-```groovy
-sec1Security(
-    apiCredentialsId: 'SEC1_API_KEY',
-    scanMode: 'cli',
-    cliInstallation: 'sec1-cli'
-)
-```
+#### `sbomFile` (optional, CLI mode only)
 
-Pipelines that already generate a CycloneDX SBOM in the build can pass it with the `sbomFile` parameter (workspace-relative JSON path); the plugin then uploads that file for SCA and no generation runs. The older `scaInstallation` / `sastInstallation` parameters still work but are deprecated in favor of `cliInstallation`.
+Workspace-relative path to a CycloneDX SBOM (JSON) your build already generates. When set, SCA uploads that file instead of generating one. Useful on air-gapped agents or when you keep an SBOM as a compliance artifact.
 
 #### `sastIncrementalScan` (optional, default: `false`)
 
@@ -202,7 +181,7 @@ Whether vulnerability threshold needs to be applied on the build.
 Threshold values for each type of vulnerability. Example configuration:
 `[criticalThreshold: '0', highThreshold: '10', mediumThreshold: '0', lowThreshold: '0']`
 
-If the scan reports more vulnerabilities than the configured threshold for the respective severity, an error will be shown in the console and the build status will be modified based on `actionOnThresholdBreached`.
+A severity breaches its threshold when its count is non-zero and greater than or equal to the configured value — so `criticalThreshold: '0'` means "fail on the first critical finding", and a clean scan never breaches. On a breach, an error is shown in the console and the build status is set based on `actionOnThresholdBreached`.
 
 #### `actionOnThresholdBreached` (optional, default: `fail`)
 
@@ -212,18 +191,61 @@ The action to take on the build if a vulnerability threshold is breached. Possib
 
 The plugin polls every 10 seconds for the scan result and times out after 30 minutes. For scans that take longer, set `asyncScan: true` (without `applyThreshold`) so the pipeline does not block.
 
-## Running SAST on the agent (CLI mode)
+## Running scans on the agent (CLI mode)
 
-By default the SAST scan runs on the Sec1 server. To run it on the Jenkins agent instead, set `sastMode: 'cli'` and configure a Sec1 SAST installation:
+By default both scans run on the Sec1 server, which clones your repository. With `scanMode: 'cli'` they run on the Jenkins agent instead — use this when the Sec1 server cannot reach your repository (private SCM, air-gapped network) or your dependencies live in a private registry (Nexus, Artifactory, private npm).
 
-1. Go to **Manage Jenkins → Tools → Sec1 SAST CLI installations**.
-2. Click **Add Sec1 SAST CLI** and give it a name (for example `sec1-sast`).
-3. Either:
-   - Set **Installation directory** to the directory containing a pre-installed `sec1-sast` binary on the agent, OR
-   - Add the **Install from sec1.io (latest)** installer. The plugin downloads the right binary for the agent's platform on first use and caches it under `$JENKINS_HOME/tools/`.
-4. In your job, set `sastMode: 'cli'` and `sastInstallation: 'sec1-sast'` (matching the name above).
+- **SAST** analyzes the checked-out workspace with the `sec1-sast` engine and uploads only the findings report.
+- **SCA** generates a CycloneDX SBOM on the agent and uploads it. Dependencies are resolved with the agent's own toolchain and credentials (`settings.xml`, `.npmrc`, …), so private registries work without giving the Sec1 server access to them.
 
-The plugin runs the CLI on the agent, streams its output to the build log, extracts the report ID, and then polls the Sec1 server for the final status (so threshold enforcement still respects server-side triage like false-positive marks).
+### One-time setup
+
+1. Go to **Manage Jenkins → Tools → Sec1 CLI installations → Add Sec1 CLI**, name it (for example `sec1-cli`), tick **Install automatically** and choose **Install from sec1.io (latest)**. Each agent downloads the right binaries for its platform on first use and refreshes them daily.
+2. Make sure the agent has the project's build tools on its `PATH` — SBOM generation runs them to resolve the full dependency tree: `node`/`npx` for every project, plus `mvn` for Maven projects and `gradle` (or a `./gradlew` wrapper) for Gradle projects. If a tool is installed but not on the agent's `PATH`, add it under **Manage Jenkins → System → Global properties → Environment variables**, for example `PATH+MAVEN` = `/opt/apache-maven-3.9.6/bin`.
+
+   Without the build tool, generation falls back to reading the manifest directly, which captures only direct dependencies — vulnerabilities in transitive dependencies are missed. The scan log warns about this explicitly (see below).
+
+### Pipeline example
+
+Check out the repository before the scan and run the step inside it — CLI mode scans the files in the workspace:
+
+```groovy
+pipeline {
+  agent any
+  stages {
+    stage('Sec1 Security Scan') {
+      steps {
+        checkout scm
+        sec1Security(
+          apiCredentialsId: '<Your Sec1 Api Key ID>',
+          scanMode: 'cli',
+          cliInstallation: 'sec1-cli',
+          runSca: true,
+          runSast: true,
+          applyThreshold: true,
+          actionOnThresholdBreached: 'unstable',
+          threshold: [criticalThreshold: '0', highThreshold: '0']
+        )
+      }
+    }
+  }
+}
+```
+
+`scmUrl` and `scanTag` are optional here: the plugin detects the repository URL and branch from the checkout. If you set them from environment variables, guard against unset values — in Groovy `"${env.REPO_URL}"` becomes the literal string `null` when the variable is missing. Use `scmUrl: env.REPO_URL ?: ''` instead.
+
+### What you will see
+
+- Every CLI-mode scan prints the engine/CLI version it ran (`Engine Version …`, `CLI Version …`), so you can tell which build produced the findings.
+- **Multi-module repositories:** one SBOM is generated and uploaded per package-manager location (each Maven module, each `package.json` directory, …), so the Sec1 dashboard shows findings per module. Thresholds apply to the combined totals.
+- **C/C++ repositories:** libraries vendored into the source tree (mbedTLS, zlib, FreeRTOS, lwIP, …) are identified from their version headers, compiled binaries and directory layout — the same fingerprinting the Sec1 server uses.
+- **Incomplete SBOM warning:** if the agent cannot resolve dependencies (build tool missing, private registry unreachable), the log shows `SBOM may be INCOMPLETE …`. Treat findings from that run as a lower bound and fix the agent setup.
+- Output from the SBOM generator and build tools is kept out of the console and written to `sec1-sbom-generation.log` in the workspace; the last lines are shown automatically if generation fails.
+- `asyncScan` and `sastIncrementalScan` are ignored in CLI mode; scans run synchronously on the agent.
+
+### Older parameters
+
+Configurations written for earlier releases keep working: `sastMode: 'cli'` with `sastInstallation`, and `scaMode: 'sbom'` with `scaInstallation`. They set each scan separately and need separate tool installations; prefer `scanMode` with a single `cliInstallation` for new jobs.
 
 ## Troubleshooting
 
