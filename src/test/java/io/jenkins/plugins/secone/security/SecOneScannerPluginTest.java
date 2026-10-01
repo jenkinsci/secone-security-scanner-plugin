@@ -3,6 +3,9 @@ package io.jenkins.plugins.secone.security;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -426,5 +429,26 @@ public class SecOneScannerPluginTest {
 		mockedJenkins = mockStatic(Jenkins.class);
 		when(Jenkins.get()).thenReturn(jenkins);
 		mockedCredentialsProvider = mockStatic(CredentialsProvider.class);
+	}
+
+	@Test
+	public void testParseHeadBranchKeepsSlashesAndIgnoresDetachedHead() {
+		assertEquals("feature/scm-url-config", plugin.parseHeadBranch("ref: refs/heads/feature/scm-url-config\n"));
+		assertEquals("main", plugin.parseHeadBranch("ref: refs/heads/main"));
+		assertNull(plugin.parseHeadBranch("73c8cb6fa1b2c3d4e5f60718293a4b5c6d7e8f90"));
+		assertNull(plugin.parseHeadBranch(null));
+	}
+
+	@Test
+	public void testParseRemoteOriginUrlStripsCredentialsAndStopsAtNextSection() {
+		String config = "[core]\n\tbare = false\n"
+				+ "[remote \"origin\"]\n\turl = https://user:secret@github.com/org/repo.git\n"
+				+ "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+				+ "[remote \"upstream\"]\n\turl = https://github.com/other/repo.git\n";
+		String url = plugin.parseRemoteOriginUrl(config);
+		assertNotNull(url);
+		assertFalse(url.contains("secret"));
+		assertTrue(url.contains("github.com/org/repo"));
+		assertNull(plugin.parseRemoteOriginUrl("[core]\n\tbare = false\n"));
 	}
 }
