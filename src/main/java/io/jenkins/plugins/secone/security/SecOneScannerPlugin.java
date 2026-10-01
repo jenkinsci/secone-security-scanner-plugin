@@ -483,7 +483,10 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			printLogs(listener.getLogger(), "Using configured SCM URL: " + gitUrl, "g");
 		} else {
 			try {
-				gitUrl = getGitUrl(workingDirectory);
+				gitUrl = parseRemoteOriginUrl(readGitMetadata(objectFactory.getGitFolderConfigPath()));
+				if (StringUtils.isBlank(gitUrl)) {
+					gitUrl = getGitUrl(workingDirectory);
+				}
 				if (StringUtils.isBlank(gitUrl)) {
 					gitUrl = run.getEnvironment(listener).get("GIT_URL");
 				}
@@ -506,7 +509,10 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		}
 		String banchName = null;
 		try {
-			banchName = getGitBranch(workingDirectory);
+			banchName = parseHeadBranch(readGitMetadata(".git/HEAD"));
+			if (StringUtils.isBlank(banchName)) {
+				banchName = getGitBranch(workingDirectory);
+			}
 			if (StringUtils.isBlank(banchName)) {
 				banchName = run.getEnvironment(listener).get("GIT_BRANCH");
 			}
@@ -1043,20 +1049,27 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	}
 
 	public String getGitBranch(String repositoryPath) throws IOException {
+		if (StringUtils.isBlank(repositoryPath)) {
+			return null;
+		}
 		Path headFilePath = Paths.get(repositoryPath, ".git", "HEAD");
 		if (!Files.exists(headFilePath)) {
 			return null;
 		}
+		return parseHeadBranch(Files.readString(headFilePath, StandardCharsets.UTF_8));
+	}
 
-		try (BufferedReader reader = Files.newBufferedReader(headFilePath, StandardCharsets.UTF_8)) {
-			String headContent = reader.readLine();
-			if (headContent != null && headContent.startsWith("ref:")) {
-				String[] parts = headContent.split("/");
-				return parts[parts.length - 1]; // Returns the branch name
-			}
+	/* "ref: refs/heads/feature/x" -> "feature/x"; a detached HEAD (bare sha) has no branch. */
+	String parseHeadBranch(String headContent) {
+		if (StringUtils.isBlank(headContent)) {
+			return null;
 		}
-
-		return null;
+		String head = headContent.trim();
+		if (!head.startsWith("ref:")) {
+			return null;
+		}
+		String ref = head.substring("ref:".length()).trim();
+		return ref.startsWith("refs/heads/") ? ref.substring("refs/heads/".length()) : ref;
 	}
 
 	private int runScaScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
@@ -1849,29 +1862,67 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	}
 
 	public String getGitUrl(String repositoryPath) throws IOException {
-		String gitConfigPath = repositoryPath + File.separator + objectFactory.getGitFolderConfigPath();
-		if (!Files.exists(Path.of(gitConfigPath))) {
+		if (StringUtils.isBlank(repositoryPath)) {
 			return null;
 		}
-		try (BufferedReader reader = new BufferedReader(new FileReader(gitConfigPath, StandardCharsets.UTF_8))) {
-			String line;
-			boolean inRemoteSection = false;
+		Path gitConfigPath = Path.of(repositoryPath, objectFactory.getGitFolderConfigPath());
+		if (!Files.exists(gitConfigPath)) {
+			return null;
+		}
+		return parseRemoteOriginUrl(Files.readString(gitConfigPath, StandardCharsets.UTF_8));
+	}
 
-			while ((line = reader.readLine()) != null) {
-				if (line.trim().equals("[remote \"origin\"]")) {
-					inRemoteSection = true;
-				}
-				if (inRemoteSection && line.trim().startsWith("url")) {
-					String[] parts = line.split("=");
-					if (parts.length == 2) {
-						String rawUrl = parts[1].trim();
-						return removeCredentialsFromGitUrl(rawUrl);
-					}
-				}
-				if (inRemoteSection && line.trim().startsWith("[") && !line.trim().equals("[remote \"origin\"]")) {
-					break;
+	String parseRemoteOriginUrl(String gitConfig) {
+		if (StringUtils.isBlank(gitConfig)) {
+			return null;
+		}
+		boolean inRemoteSection = false;
+		for (String line : gitConfig.split("\\R")) {
+			String trimmed = line.trim();
+			if (trimmed.equals("[remote \"origin\"]")) {
+				inRemoteSection = true;
+				continue;
+			}
+			if (inRemoteSection && trimmed.startsWith("[")) {
+				break;
+			}
+			if (inRemoteSection && trimmed.startsWith("url")) {
+				String[] parts = trimmed.split("=", 2);
+				if (parts.length == 2 && StringUtils.isNotBlank(parts[1])) {
+					return removeCredentialsFromGitUrl(parts[1].trim());
 				}
 			}
+		}
+		return null;
+	}
+
+	/*
+	 * Reads a file under .git through the step's workspace FilePath, so it works
+	 * on remote agents and inside dir() blocks (where the checkout is not at
+	 * $WORKSPACE). Walks up toward the job workspace root, like git itself,
+	 * when the step runs in a subdirectory of the checkout.
+	 */
+	private String readGitMetadata(String relativePath) {
+		if (workspaceForCli == null) {
+			return null;
+		}
+		String jobRoot = envForCli == null ? null : envForCli.get("WORKSPACE");
+		try {
+			FilePath dir = workspaceForCli;
+			for (int depth = 0; dir != null && depth < 10; depth++) {
+				FilePath candidate = dir.child(relativePath);
+				if (candidate.exists()) {
+					return candidate.readToString();
+				}
+				if (jobRoot == null || !dir.getRemote().startsWith(jobRoot) || dir.getRemote().equals(jobRoot)) {
+					break;
+				}
+				dir = dir.getParent();
+			}
+		} catch (IOException ex) {
+			logger.debug("Unable to read {} from workspace", relativePath, ex);
+		} catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
 		}
 		return null;
 	}
