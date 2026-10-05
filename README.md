@@ -289,6 +289,48 @@ pipeline {
 
 Configurations written for earlier releases keep working: `sastMode: 'cli'` with `sastInstallation`, and `scaMode: 'sbom'` with `scaInstallation`. They set each scan separately and need separate tool installations; prefer `scanMode` with a single `cliInstallation` for new jobs.
 
+## Mobile app scanning (`sec1MobileScan`)
+
+Scans a built mobile app binary (`.apk`, `.aab`, `.ipa`, also `.xapk` and split bundles) with Sec1 Mobile Security. It is a separate step from `sec1Security` because it runs on the build output rather than the source, so place it after the stage that produces the binary. It uses the same Sec1 API key credential (the account needs the Mobile Security plan).
+
+```groovy
+stage('Build APK') {
+  steps { sh './gradlew assembleRelease' }
+}
+stage('Sec1 Mobile Scan') {
+  steps {
+    sec1MobileScan(
+      apiCredentialsId: '<Your Sec1 Api Key ID>',
+      binaryPath: 'app/build/outputs/apk/release/*.apk',
+      appName: 'my-app',
+      environment: 'uat'
+    )
+  }
+}
+```
+
+The step uploads the binary from the agent, waits for the scan to finish (typically 5–15 minutes) while printing its progress, prints a link to the results in the Sec1 console, archives the findings as `sec1-mobile-findings.json`, and applies the quality gate. If the build is aborted, the scan is cancelled.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `apiCredentialsId` | `SEC1_API_KEY` | Secret text credential holding the Sec1 API key |
+| `binaryPath` | *required* | Workspace-relative path to the binary; wildcards allowed, must match exactly one file |
+| `appName` | binary file name | Application name shown in the console |
+| `appVersion` | build number | Version recorded with the scan |
+| `environment` | — | Free-text label, e.g. `uat`, `prod` |
+| `scanType` | `owasp` | `owasp`, `quick`, `compliance` or `deep` |
+| `failOnSeverity` | `High` | Fail if any finding is at or above this severity (`Critical`, `High`, `Medium`, `Low`), or `None` |
+| `maxCritical` / `maxHigh` / `maxMedium` | no limit | Maximum findings allowed per severity (`maxHigh: 5` passes with 5, fails with 6) |
+| `minScore` | — | Fail if the aggregate score is below this value |
+| `unstableInsteadOfFail` | `false` | Mark the build unstable instead of failed when the gate fails |
+| `baseUrl` | Sec1 SaaS | For on-premises scanner nodes: your load balancer URL, e.g. `https://scanner.example.com/ai-sast-mobile` (or set `SEC1_MOBILE_BASE_URL`) |
+| `pollIntervalSeconds` | `20` | How often to check progress (minimum 10) |
+| `timeoutMinutes` | `45` | Fail if the scan has not finished in time; the scan keeps running in the console |
+| `archiveFindings` | `true` | Archive `sec1-mobile-findings.json` with the build |
+| `source`, `engagementId` | `jenkins:JOB#BUILD`, — | Provenance label and engagement grouping |
+
+A scan that is interrupted on the server side (`partial`) is resubmitted once automatically. A failed scan fails the build with the reason from the server.
+
 ## Troubleshooting
 
 To see more information on your steps:
