@@ -309,7 +309,7 @@ stage('Sec1 Mobile Scan') {
 }
 ```
 
-The step uploads the binary from the agent, waits for the scan to finish (typically 5–15 minutes) while printing its progress, prints a link to the results in the Sec1 console, archives the findings as `sec1-mobile-findings.json`, and applies the quality gate. If the build is aborted, the scan is cancelled.
+The step uploads the binary from the agent, waits for the scan to finish (typically 5–15 minutes) while printing its progress, prints a link to the results in the Sec1 console, archives the findings as `sec1-mobile-findings.json`, and applies the vulnerability threshold if one is configured. If the build is aborted, the scan is cancelled.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -319,17 +319,36 @@ The step uploads the binary from the agent, waits for the scan to finish (typica
 | `appVersion` | build number | Version recorded with the scan |
 | `environment` | — | Free-text label, e.g. `uat`, `prod` |
 | `scanType` | `owasp` | `owasp`, `quick`, `compliance` or `deep` |
-| `failOnSeverity` | `High` | Fail if any finding is at or above this severity (`Critical`, `High`, `Medium`, `Low`), or `None` |
-| `maxCritical` / `maxHigh` / `maxMedium` | no limit | Maximum findings allowed per severity (`maxHigh: 5` passes with 5, fails with 6) |
-| `minScore` | — | Fail if the aggregate score is below this value |
-| `unstableInsteadOfFail` | `false` | Mark the build unstable instead of failed when the gate fails |
+| `applyThreshold` | on when `threshold` is set | Set `false` to keep a configured `threshold` without applying it |
+| `threshold` | *none* | Per-severity thresholds, e.g. `[criticalThreshold: '0', highThreshold: '5']` |
+| `actionOnThresholdBreached` | `fail` | `fail`, `unstable` or `continue` when a threshold is breached |
+| `minScore` | *none* | Breach when the aggregate score is below this value |
 | `baseUrl` | Sec1 SaaS | For on-premises scanner nodes: your load balancer URL, e.g. `https://scanner.example.com/ai-sast-mobile` (or set `SEC1_MOBILE_BASE_URL`) |
 | `pollIntervalSeconds` | `20` | How often to check progress (minimum 10) |
 | `timeoutMinutes` | `45` | Fail if the scan has not finished in time; the scan keeps running in the console |
 | `archiveFindings` | `true` | Archive `sec1-mobile-findings.json` with the build |
 | `source`, `engagementId` | `jenkins:JOB#BUILD`, — | Provenance label and engagement grouping |
 
-A scan that is interrupted on the server side (`partial`) is resubmitted once automatically. A failed scan fails the build with the reason from the server.
+### Vulnerability threshold
+
+The threshold works the same way as in `sec1Security`. **By default no threshold is applied:** findings are reported, archived and linked in the console, but they do not change the build result.
+
+When a threshold is set, a severity breaches when its count is non-zero and greater than or equal to the configured value, so `criticalThreshold: '0'` fails on the first critical finding and `highThreshold: '5'` passes with 4 High findings and breaches with 5. A blank severity is not checked. `minScore` breaches when the aggregate score is below the value. On a breach, the reasons are printed in the console and the build is set according to `actionOnThresholdBreached`.
+
+```groovy
+sec1MobileScan(
+  apiCredentialsId: '<Your Sec1 Api Key ID>',
+  binaryPath: 'app/build/outputs/apk/release/*.apk',
+  applyThreshold: true,
+  actionOnThresholdBreached: 'unstable',
+  threshold: [criticalThreshold: '0', highThreshold: '5'],
+  minScore: 40
+)
+```
+
+In freestyle jobs the same options are under **Apply Threshold** in the step configuration, and the **Pipeline Syntax** snippet generator produces the matching `sec1MobileScan` line.
+
+A scan that is interrupted on the server side (`partial`) is resubmitted once automatically. A failed scan fails the build with the reason from the server; threshold options do not apply to it.
 
 ## Troubleshooting
 

@@ -40,6 +40,7 @@ import hudson.remoting.VirtualChannel;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.Builder;
 import hudson.util.ListBoxModel;
+import io.jenkins.plugins.secone.security.pojo.Threshold;
 import jenkins.model.Jenkins;
 import jenkins.tasks.SimpleBuildStep;
 
@@ -71,12 +72,10 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 	private String engagementId;
 	private Integer pollIntervalSeconds;
 	private Integer timeoutMinutes;
-	private String failOnSeverity;
-	private Integer maxCritical;
-	private Integer maxHigh;
-	private Integer maxMedium;
+	private Boolean applyThreshold;
+	private Threshold threshold;
+	private String actionOnThresholdBreached;
 	private Integer minScore;
-	private boolean unstableInsteadOfFail;
 	private Boolean archiveFindings;
 
 	@DataBoundConstructor
@@ -174,40 +173,32 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		this.timeoutMinutes = timeoutMinutes;
 	}
 
-	public String getFailOnSeverity() {
-		return StringUtils.defaultIfBlank(failOnSeverity, "High");
+	/** Null unless set explicitly; a configured threshold applies unless this is false. */
+	public Boolean getApplyThreshold() {
+		return applyThreshold;
 	}
 
 	@DataBoundSetter
-	public void setFailOnSeverity(String failOnSeverity) {
-		this.failOnSeverity = StringUtils.trimToNull(failOnSeverity);
+	public void setApplyThreshold(Boolean applyThreshold) {
+		this.applyThreshold = applyThreshold;
 	}
 
-	public Integer getMaxCritical() {
-		return maxCritical;
-	}
-
-	@DataBoundSetter
-	public void setMaxCritical(Integer maxCritical) {
-		this.maxCritical = maxCritical;
-	}
-
-	public Integer getMaxHigh() {
-		return maxHigh;
+	public Threshold getThreshold() {
+		return threshold;
 	}
 
 	@DataBoundSetter
-	public void setMaxHigh(Integer maxHigh) {
-		this.maxHigh = maxHigh;
+	public void setThreshold(Threshold threshold) {
+		this.threshold = threshold;
 	}
 
-	public Integer getMaxMedium() {
-		return maxMedium;
+	public String getActionOnThresholdBreached() {
+		return actionOnThresholdBreached;
 	}
 
 	@DataBoundSetter
-	public void setMaxMedium(Integer maxMedium) {
-		this.maxMedium = maxMedium;
+	public void setActionOnThresholdBreached(String actionOnThresholdBreached) {
+		this.actionOnThresholdBreached = StringUtils.trimToNull(actionOnThresholdBreached);
 	}
 
 	public Integer getMinScore() {
@@ -219,13 +210,21 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		this.minScore = minScore;
 	}
 
-	public boolean isUnstableInsteadOfFail() {
-		return unstableInsteadOfFail;
+	/* Same rules as sec1Security: no threshold means no gate. */
+	boolean isThresholdActive() {
+		return (threshold != null && !Boolean.FALSE.equals(applyThreshold)) || minScore != null;
 	}
 
-	@DataBoundSetter
-	public void setUnstableInsteadOfFail(boolean unstableInsteadOfFail) {
-		this.unstableInsteadOfFail = unstableInsteadOfFail;
+	/* actionOnThresholdBreached wins over the action picked in the threshold block; default fail. */
+	String resolveBreachAction() {
+		for (String candidate : new String[] { actionOnThresholdBreached,
+				threshold == null ? null : threshold.getStatusAction() }) {
+			String action = StringUtils.lowerCase(StringUtils.trimToNull(candidate));
+			if ("fail".equals(action) || "unstable".equals(action) || "continue".equals(action)) {
+				return action;
+			}
+		}
+		return "fail";
 	}
 
 	public boolean isArchiveFindings() {
@@ -340,20 +339,31 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 			archiveFindings(run, workspace, launcher, listener, channel, base, id, apiKey, userAgent, log);
 		}
 
-		List<String> violations = MobileScanGate.evaluate(bySeverity, score, getFailOnSeverity(), maxCritical,
-				maxHigh, maxMedium, minScore);
-		if (violations.isEmpty()) {
-			log.println("Quality Gate           PASSED");
+		if (!isThresholdActive()) {
+			log.println("Threshold              Disabled (findings do not affect the build result)");
 			return;
 		}
-		log.println("Quality Gate           FAILED");
-		for (String v : violations) {
-			log.println("  - " + v);
+		Threshold effective = Boolean.FALSE.equals(applyThreshold) ? null : threshold;
+		List<String> breaches = MobileScanGate.evaluate(bySeverity, score, effective, minScore);
+		if (breaches.isEmpty()) {
+			log.println("Threshold              PASSED");
+			return;
 		}
-		if (unstableInsteadOfFail) {
+		String action = resolveBreachAction();
+		for (String breach : breaches) {
+			log.println(breach);
+		}
+		switch (action) {
+		case "continue":
+			log.println("Threshold              BREACHED (action: continue)");
+			break;
+		case "unstable":
+			log.println("Threshold              BREACHED (action: unstable)");
 			run.setResult(Result.UNSTABLE);
-		} else {
-			throw new AbortException("Sec1 mobile scan quality gate failed.");
+			break;
+		default:
+			log.println("Threshold              BREACHED (action: fail)");
+			throw new AbortException("Sec1 mobile scan vulnerability threshold breached. Failing the build.");
 		}
 	}
 
@@ -638,20 +648,6 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 			items.add("Quick", "quick");
 			items.add("Compliance", "compliance");
 			items.add("Deep", "deep");
-			return items;
-		}
-
-		@POST
-		public ListBoxModel doFillFailOnSeverityItems(@AncestorInPath Item item) {
-			ListBoxModel items = new ListBoxModel();
-			if (!canConfigure(item)) {
-				return items;
-			}
-			items.add("High or above (default)", "High");
-			items.add("Critical only", "Critical");
-			items.add("Medium or above", "Medium");
-			items.add("Any finding (Low or above)", "Low");
-			items.add("Never (use limits / score only)", "None");
 			return items;
 		}
 

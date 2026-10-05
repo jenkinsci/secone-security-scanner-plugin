@@ -2,54 +2,44 @@ package io.jenkins.plugins.secone.security.mobile;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang.math.NumberUtils;
+
+import io.jenkins.plugins.secone.security.pojo.Threshold;
+
 /**
- * Quality gate for a completed mobile scan. Limits are maximum allowed counts
- * ({@code maxHigh = 5} passes with 5 high findings and fails with 6), matching
- * the Sec1 Mobile Security CI contract.
+ * Vulnerability threshold for a completed mobile scan, with the same semantics
+ * as the sec1Security step: a severity breaches when its count is non-zero and
+ * greater than or equal to its threshold, so {@code criticalThreshold: '0'}
+ * fails on the first critical finding and a blank threshold is not checked.
  */
 public final class MobileScanGate {
-
-	/** Severity tiers from most to least severe, as reported in {@code summary.by_severity}. */
-	static final String[] TIERS = { "Critical", "High", "Medium", "Low" };
 
 	private MobileScanGate() {
 	}
 
 	/**
-	 * @param bySeverity     counts keyed by tier name (case-insensitive); may be null
-	 * @param score          {@code summary.aggregate_score}; may be null
-	 * @param failOnSeverity lowest tier that fails the build when any finding is at
-	 *                       or above it, or "None" to disable
-	 * @param maxCritical    maximum critical findings allowed, null for unlimited
-	 * @param maxHigh        maximum high findings allowed, null for unlimited
-	 * @param maxMedium      maximum medium findings allowed, null for unlimited
-	 * @param minScore       minimum aggregate score, null to disable
-	 * @return human-readable reasons the gate failed; empty when it passed
+	 * @param bySeverity counts keyed by tier name (case-insensitive); may be null
+	 * @param score      {@code summary.aggregate_score}; may be null
+	 * @param threshold  per-severity thresholds; may be null
+	 * @param minScore   minimum aggregate score; may be null
+	 * @return breach messages; empty when nothing breached
 	 */
-	public static List<String> evaluate(Map<String, Integer> bySeverity, Integer score, String failOnSeverity,
-			Integer maxCritical, Integer maxHigh, Integer maxMedium, Integer minScore) {
-		List<String> violations = new ArrayList<>();
-
-		int floor = tierIndex(failOnSeverity);
-		if (floor >= 0) {
-			for (int i = 0; i <= floor; i++) {
-				int count = count(bySeverity, TIERS[i]);
-				if (count > 0) {
-					violations.add(count + " " + TIERS[i] + " finding(s) at or above the fail-on severity ("
-							+ TIERS[floor] + ")");
-				}
-			}
+	public static List<String> evaluate(Map<String, Integer> bySeverity, Integer score, Threshold threshold,
+			Integer minScore) {
+		List<String> breaches = new ArrayList<>();
+		if (threshold != null) {
+			check(breaches, bySeverity, "Critical", threshold.getCriticalThreshold());
+			check(breaches, bySeverity, "High", threshold.getHighThreshold());
+			check(breaches, bySeverity, "Medium", threshold.getMediumThreshold());
+			check(breaches, bySeverity, "Low", threshold.getLowThreshold());
 		}
-		checkMax(violations, bySeverity, "Critical", maxCritical);
-		checkMax(violations, bySeverity, "High", maxHigh);
-		checkMax(violations, bySeverity, "Medium", maxMedium);
 		if (minScore != null && score != null && score < minScore) {
-			violations.add("aggregate score " + score + " is below the minimum " + minScore);
+			breaches.add("Score threshold breached. Found: " + score + ", Minimum: " + minScore);
 		}
-		return violations;
+		return breaches;
 	}
 
 	static int count(Map<String, Integer> bySeverity, String tier) {
@@ -64,26 +54,14 @@ public final class MobileScanGate {
 		return 0;
 	}
 
-	/** Index into {@link #TIERS}, or -1 for "None"/blank/unknown. */
-	static int tierIndex(String tier) {
-		if (tier == null) {
-			return -1;
-		}
-		for (int i = 0; i < TIERS.length; i++) {
-			if (TIERS[i].toLowerCase(Locale.ROOT).equals(tier.trim().toLowerCase(Locale.ROOT))) {
-				return i;
-			}
-		}
-		return -1;
-	}
-
-	private static void checkMax(List<String> violations, Map<String, Integer> bySeverity, String tier, Integer max) {
-		if (max == null) {
+	private static void check(List<String> breaches, Map<String, Integer> bySeverity, String tier, String limit) {
+		String value = StringUtils.trimToNull(limit);
+		if (value == null || !NumberUtils.isDigits(value)) {
 			return;
 		}
 		int count = count(bySeverity, tier);
-		if (count > max) {
-			violations.add(count + " " + tier + " finding(s) exceed the maximum of " + max);
+		if (count != 0 && count >= Integer.parseInt(value)) {
+			breaches.add(tier + " Vulnerability Threshold breached. Found: " + count + ", Allowed: " + value);
 		}
 	}
 }

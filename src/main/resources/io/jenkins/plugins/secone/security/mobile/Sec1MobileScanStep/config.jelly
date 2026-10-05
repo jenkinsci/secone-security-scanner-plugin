@@ -18,26 +18,53 @@
     <f:entry title="Scan Type" field="scanType">
         <f:select default="owasp"/>
     </f:entry>
-    <f:section title="Quality Gate">
-        <f:entry title="Fail on Severity" field="failOnSeverity">
-            <f:select default="High"/>
-        </f:entry>
-        <f:entry title="Max Critical" field="maxCritical">
-            <f:number clazz="non-negative-number" min="0"/>
-        </f:entry>
-        <f:entry title="Max High" field="maxHigh">
-            <f:number clazz="non-negative-number" min="0"/>
-        </f:entry>
-        <f:entry title="Max Medium" field="maxMedium">
-            <f:number clazz="non-negative-number" min="0"/>
-        </f:entry>
-        <f:entry title="Minimum Score" field="minScore">
-            <f:number clazz="non-negative-number" min="0" max="100"/>
-        </f:entry>
-        <f:entry title="Mark build unstable instead of failed" field="unstableInsteadOfFail">
-            <f:checkbox/>
-        </f:entry>
-    </f:section>
+    <f:optionalBlock title="${%thresholdTitle}" field="threshold" checked="${instance.threshold != null}">
+        <f:block>
+            <table style="padding-left:2%; width:100%;">
+                <tr>
+                    <td>
+                        <f:entry title="${%criticalThresholdTitle}" field="criticalThreshold">
+                            <f:textbox default="0" value="${instance.threshold.criticalThreshold}"/>
+                        </f:entry>
+                    </td>
+                    <td>
+                        <f:entry title="${%highThresholdTitle}" field="highThreshold">
+                            <f:textbox default="10" value="${instance.threshold.highThreshold}"/>
+                        </f:entry>
+                    </td>
+                    <td>
+                        <f:entry title="${%mediumThresholdTitle}" field="mediumThreshold">
+                            <f:textbox default="" value="${instance.threshold.mediumThreshold}"/>
+                        </f:entry>
+                    </td>
+                    <td>
+                        <f:entry title="${%lowThresholdTitle}" field="lowThreshold">
+                            <f:textbox default="" value="${instance.threshold.lowThreshold}"/>
+                        </f:entry>
+                    </td>
+                </tr>
+                <tr>
+                	<td colspan="4">
+                		On threshold breached, mark the <b>Build Status</b> as
+                	</td>
+                </tr>
+                <tr>
+                	<td>
+                		<f:radio name="statusAction" field="statusAction" title="Fail" checked="${instance.threshold.statusAction == 'fail' || !instance.threshold.statusAction}" value="fail"/>
+                	</td>
+                 	<td>
+                 		<f:radio name="statusAction" field="statusAction" title="Unstable" checked="${instance.threshold.statusAction == 'unstable'}" value="unstable"/>
+                	</td>
+                	<td>
+                		<f:radio name="statusAction" field="statusAction" title="Continue" checked="${instance.threshold.statusAction == 'continue'}" value="continue"/>
+                	</td>
+                </tr>
+            </table>
+        </f:block>
+    </f:optionalBlock>
+    <f:entry title="Minimum Score" field="minScore">
+        <f:number clazz="non-negative-number" min="0" max="100"/>
+    </f:entry>
     <f:advanced>
         <f:entry title="Base URL" field="baseUrl">
             <f:textbox/>

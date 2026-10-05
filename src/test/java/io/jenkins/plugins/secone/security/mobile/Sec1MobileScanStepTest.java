@@ -37,6 +37,7 @@ import hudson.model.FreeStyleProject;
 import hudson.model.Result;
 import hudson.util.Secret;
 import org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl;
+import io.jenkins.plugins.secone.security.pojo.Threshold;
 
 @WithJenkins
 class Sec1MobileScanStepTest {
@@ -174,7 +175,7 @@ class Sec1MobileScanStepTest {
 		assertTrue(body.contains("name=\"source\"\r\n\r\njenkins:mobile-app#1\r\n"));
 		assertTrue(body.contains("filename=\"app-release.apk\"\r\nContent-Type: application/octet-stream\r\n\r\nAPK-BYTES-app/build/app-release.apk"));
 
-		j.assertLogContains("Quality Gate           PASSED", b);
+		j.assertLogContains("Threshold              Disabled", b);
 		j.assertLogContains("/mobile-security/applications/cf76327f24a9?scan=" + SCAN_ID, b);
 		j.assertLogContains("Findings Archived      sec1-mobile-findings.json (650 findings)", b);
 		assertNotNull(b.getArtifactManager().root().child("sec1-mobile-findings.json"));
@@ -185,18 +186,57 @@ class Sec1MobileScanStepTest {
 	}
 
 	@Test
-	void highFindingsFailTheBuildByDefault(JenkinsRule j) throws Exception {
-		polls.add(record("completed", sev(0, 3, 0, 0)));
-		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, project(j, step(), "app/build/a.apk"));
-		j.assertLogContains("3 High finding(s) at or above the fail-on severity (High)", b);
+	void findingsDoNotAffectTheBuildWithoutAThreshold(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(9, 9, 9, 9)));
+		FreeStyleBuild b = j.buildAndAssertSuccess(project(j, step(), "app/build/a.apk"));
+		j.assertLogContains("Threshold              Disabled", b);
 	}
 
 	@Test
-	void unstableInsteadOfFail(JenkinsRule j) throws Exception {
+	void thresholdBreachFailsTheBuildByDefault(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 3, 0, 0)));
+		Sec1MobileScanStep s = step();
+		s.setThreshold(new Threshold("0", "2", "", "", null));
+		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, project(j, s, "app/build/a.apk"));
+		j.assertLogContains("High Vulnerability Threshold breached. Found: 3, Allowed: 2", b);
+		j.assertLogContains("Threshold              BREACHED (action: fail)", b);
+	}
+
+	@Test
+	void actionOnThresholdBreachedUnstableOverridesBlockAction(JenkinsRule j) throws Exception {
 		polls.add(record("completed", sev(1, 0, 0, 0)));
 		Sec1MobileScanStep s = step();
-		s.setUnstableInsteadOfFail(true);
+		s.setThreshold(new Threshold("0", "", "", "", "fail"));
+		s.setActionOnThresholdBreached("unstable");
 		j.buildAndAssertStatus(Result.UNSTABLE, project(j, s, "app/build/a.apk"));
+	}
+
+	@Test
+	void continueActionKeepsTheBuildGreen(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(4, 0, 0, 0)));
+		Sec1MobileScanStep s = step();
+		s.setThreshold(new Threshold("0", "", "", "", "continue"));
+		FreeStyleBuild b = j.buildAndAssertSuccess(project(j, s, "app/build/a.apk"));
+		j.assertLogContains("Critical Vulnerability Threshold breached. Found: 4, Allowed: 0", b);
+		j.assertLogContains("BREACHED (action: continue)", b);
+	}
+
+	@Test
+	void applyThresholdFalseDisablesAConfiguredThreshold(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(4, 4, 0, 0)));
+		Sec1MobileScanStep s = step();
+		s.setThreshold(new Threshold("0", "0", "", "", "fail"));
+		s.setApplyThreshold(false);
+		j.buildAndAssertSuccess(project(j, s, "app/build/a.apk"));
+	}
+
+	@Test
+	void minScoreAloneAppliesTheAction(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		Sec1MobileScanStep s = step();
+		s.setMinScore(70);
+		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, project(j, s, "app/build/a.apk"));
+		j.assertLogContains("Score threshold breached. Found: 55, Minimum: 70", b);
 	}
 
 	@Test
@@ -294,21 +334,28 @@ class Sec1MobileScanStepTest {
 	}
 
 	@Test
-	void configRoundTripKeepsEmptyLimitsUnset(JenkinsRule j) throws Exception {
+	void configRoundTripKeepsThresholdAndUnsetFields(JenkinsRule j) throws Exception {
 		Sec1MobileScanStep s = new Sec1MobileScanStep("SEC1_API_KEY", "app/*.apk");
-		s.setMaxHigh(5);
+		s.setThreshold(new Threshold("0", "5", "", "", "unstable"));
 		s.setEnvironment("prod");
 		FreeStyleProject p = j.createFreeStyleProject();
 		p.getBuildersList().add(s);
 		p = j.configRoundtrip(p);
 		Sec1MobileScanStep after = p.getBuildersList().get(Sec1MobileScanStep.class);
 		assertEquals("app/*.apk", after.getBinaryPath());
-		assertEquals(Integer.valueOf(5), after.getMaxHigh());
-		assertNull(after.getMaxCritical());
+		assertNotNull(after.getThreshold());
+		assertEquals("0", after.getThreshold().getCriticalThreshold());
+		assertEquals("5", after.getThreshold().getHighThreshold());
+		assertEquals("unstable", after.getThreshold().getStatusAction());
 		assertNull(after.getMinScore());
 		assertEquals("prod", after.getEnvironment());
-		assertEquals("High", after.getFailOnSeverity());
 		assertEquals("owasp", after.getScanType());
 		assertTrue(after.isArchiveFindings());
+
+		Sec1MobileScanStep none = new Sec1MobileScanStep("SEC1_API_KEY", "app/*.apk");
+		FreeStyleProject q = j.createFreeStyleProject();
+		q.getBuildersList().add(none);
+		q = j.configRoundtrip(q);
+		assertNull(q.getBuildersList().get(Sec1MobileScanStep.class).getThreshold());
 	}
 }

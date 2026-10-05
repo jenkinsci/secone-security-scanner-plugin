@@ -9,6 +9,8 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
+import io.jenkins.plugins.secone.security.pojo.Threshold;
+
 class MobileScanGateTest {
 
 	private static Map<String, Integer> sev(int critical, int high, int medium, int low) {
@@ -21,37 +23,37 @@ class MobileScanGateTest {
 	}
 
 	@Test
-	void failOnSeverityHighFailsOnHighOrCriticalOnly() {
-		assertTrue(MobileScanGate.evaluate(sev(0, 0, 9, 9), null, "High", null, null, null, null).isEmpty());
-		assertEquals(1, MobileScanGate.evaluate(sev(0, 2, 0, 0), null, "High", null, null, null, null).size());
-		assertEquals(2, MobileScanGate.evaluate(sev(1, 2, 0, 0), null, "High", null, null, null, null).size());
+	void noThresholdMeansNoBreach() {
+		assertTrue(MobileScanGate.evaluate(sev(9, 9, 9, 9), 0, null, null).isEmpty());
 	}
 
 	@Test
-	void failOnSeverityNoneDisablesTheSeverityFloor() {
-		assertTrue(MobileScanGate.evaluate(sev(5, 5, 5, 5), null, "None", null, null, null, null).isEmpty());
+	void breachesWhenNonZeroCountReachesThresholdLikeSec1Security() {
+		Threshold t = new Threshold("0", "5", "", "", "fail");
+		assertTrue(MobileScanGate.evaluate(sev(0, 4, 50, 50), null, t, null).isEmpty());
+		List<String> five = MobileScanGate.evaluate(sev(0, 5, 0, 0), null, t, null);
+		assertEquals(1, five.size());
+		assertEquals("High Vulnerability Threshold breached. Found: 5, Allowed: 5", five.get(0));
+		assertEquals(1, MobileScanGate.evaluate(sev(1, 0, 0, 0), null, t, null).size());
 	}
 
 	@Test
-	void limitsAreMaximumAllowedCounts() {
-		assertTrue(MobileScanGate.evaluate(sev(0, 5, 0, 0), null, "None", null, 5, null, null).isEmpty());
-		List<String> v = MobileScanGate.evaluate(sev(0, 6, 0, 0), null, "None", null, 5, null, null);
-		assertEquals(1, v.size());
-		assertTrue(v.get(0).contains("exceed the maximum of 5"));
-		assertEquals(1, MobileScanGate.evaluate(sev(1, 0, 0, 0), null, "None", 0, null, null, null).size());
+	void blankOrNonNumericThresholdsAreNotChecked() {
+		Threshold t = new Threshold(" ", "abc", null, "", "fail");
+		assertTrue(MobileScanGate.evaluate(sev(9, 9, 9, 9), null, t, null).isEmpty());
 	}
 
 	@Test
-	void minScoreFailsBelowThreshold() {
-		assertTrue(MobileScanGate.evaluate(sev(0, 0, 0, 0), 70, "None", null, null, null, 70).isEmpty());
-		assertEquals(1, MobileScanGate.evaluate(sev(0, 0, 0, 0), 41, "None", null, null, null, 70).size());
+	void minScoreBreachesBelowValue() {
+		assertTrue(MobileScanGate.evaluate(sev(0, 0, 0, 0), 70, null, 70).isEmpty());
+		assertEquals("Score threshold breached. Found: 41, Minimum: 70",
+				MobileScanGate.evaluate(sev(0, 0, 0, 0), 41, null, 70).get(0));
 	}
 
 	@Test
-	void severityKeysAreCaseInsensitiveAndMissingCountsAsZero() {
+	void severityKeysAreCaseInsensitive() {
 		Map<String, Integer> lower = new HashMap<>();
 		lower.put("critical", 1);
-		assertEquals(1, MobileScanGate.evaluate(lower, null, "Critical", null, null, null, null).size());
-		assertTrue(MobileScanGate.evaluate(null, null, "High", 0, 0, 0, null).isEmpty());
+		assertEquals(1, MobileScanGate.evaluate(lower, null, new Threshold("0", "", "", "", "fail"), null).size());
 	}
 }

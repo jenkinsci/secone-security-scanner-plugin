@@ -1,5 +1,9 @@
 <div>
-    Define your vulnerability threshold levels. 
+    Define your vulnerability threshold levels.
     <br/>
-    e.g. if you define critical vulnerability threshold as <b>10</b> then your build will <b>fail</b> if more than 10 critical vulnerabilities found in the scan. 
+    A severity breaches when its count is non-zero and greater than or equal to
+    the configured value: if you set the critical threshold to <b>10</b>, the
+    build is marked as configured (fail by default) when <b>10 or more</b>
+    critical vulnerabilities are found; <b>0</b> means the first critical
+    vulnerability breaches. Leave a field empty to not check that severity.
 </div>

@@ -1,0 +1,10 @@
+<div>
+    Vulnerability threshold for each severity, the same as the Sec1 Security
+    scan step. When this block is not enabled, findings never affect the build
+    result.
+    <p>A severity breaches when its count is non-zero and greater than or equal
+    to the configured value: <b>0</b> fails on the first finding of that
+    severity, <b>10</b> fails when 10 or more are found. Leave a field empty to
+    not check that severity. On a breach the build is marked as selected
+    (Fail, Unstable or Continue).</p>
+</div>
