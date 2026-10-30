@@ -1,0 +1,9 @@
+<div>
+  Download the PDF report of each scan that ran and archive it with the build: <code>sec1-sca-report.pdf</code>
+  (SCA Security Assessment) and <code>sec1-sast-report.pdf</code> (SAST, comprehensive). Off by default.
+  <p>
+  Reports are generated on request, so this adds a few seconds per scan. If a download fails, the build log shows a
+  warning and the build result is not affected. Not used with <code>asyncScan</code> (fire-and-forget), since the
+  step does not wait for the scan to finish.
+  </p>
+</div>

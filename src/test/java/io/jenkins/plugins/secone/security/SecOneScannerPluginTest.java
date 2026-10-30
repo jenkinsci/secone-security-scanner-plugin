@@ -12,6 +12,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.File;
@@ -19,6 +21,9 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.PrintStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.Map;
 
 import org.apache.http.StatusLine;
 import org.apache.http.client.methods.CloseableHttpResponse;
@@ -343,6 +348,140 @@ public class SecOneScannerPluginTest {
 		when(sastStatusHttpEntity.getContent()).thenReturn(sampleSastReportStream);
 		when(objectFactory.getGitFolderConfigPath()).thenReturn("config");
 
+	}
+
+	private static final byte[] PDF = "%PDF-1.4 sec1 sast report".getBytes(StandardCharsets.ISO_8859_1);
+
+	/**
+	 * SAST-only build: trigger, one status poll, then (when archiveReport is
+	 * set) the report download, which answers with the given status and body.
+	 */
+	private jenkins.model.ArtifactManager prepareSastReportSetup(File workspace, int reportStatus, byte[] reportBody)
+			throws Exception {
+		when(buildListener.getLogger()).thenReturn(System.out);
+		when(abstractBuild.getEnvironment(buildListener)).thenReturn(envVars);
+		when(abstractBuild.getWorkspace()).thenReturn(new FilePath(workspace));
+		when(envVars.get("SEC1_INSTANCE_URL")).thenReturn("https://api.sec1.io");
+		when(envVars.get("WORKSPACE")).thenReturn(WORKSPACE_DIRECTORY_LOCATION);
+		StringCredentials apiKeyCred = mock(StringCredentials.class);
+		when(CredentialsProvider.findCredentialById(eq("customCredentialsId"), eq(StringCredentials.class),
+				eq(abstractBuild), anyList())).thenReturn(apiKeyCred);
+		Secret mysecret = mock(Secret.class);
+		when(apiKeyCred.getSecret()).thenReturn(mysecret);
+		when(mysecret.getPlainText()).thenReturn("testApiKey");
+
+		when(objectFactory.createHttpPost(anyString())).thenAnswer(inv -> mock(HttpPost.class));
+		CloseableHttpClient client = mock(CloseableHttpClient.class);
+		when(objectFactory.createHttpClient(any(URI.class))).thenReturn(client);
+		CloseableHttpResponse sastHttpResponse = mock(CloseableHttpResponse.class);
+		CloseableHttpResponse sastStatusHttpResponse = mock(CloseableHttpResponse.class);
+		CloseableHttpResponse reportHttpResponse = mock(CloseableHttpResponse.class);
+		when(client.execute(any(HttpPost.class))).thenReturn(sastHttpResponse).thenReturn(sastStatusHttpResponse)
+				.thenReturn(reportHttpResponse);
+		StatusLine ok = mock(StatusLine.class);
+		when(ok.getStatusCode()).thenReturn(200);
+		when(sastHttpResponse.getStatusLine()).thenReturn(ok);
+		when(sastHttpResponse.getEntity()).thenReturn(sastHttpEntity);
+		when(sastStatusHttpResponse.getEntity()).thenReturn(sastStatusHttpEntity);
+		when(sastHttpEntity.getContent()).thenReturn(sampleInitiateSastScanResponseStream);
+		when(sastStatusHttpEntity.getContent()).thenReturn(sampleSastReportStream);
+		StatusLine reportLine = mock(StatusLine.class);
+		when(reportLine.getStatusCode()).thenReturn(reportStatus);
+		when(reportHttpResponse.getStatusLine()).thenReturn(reportLine);
+		when(reportHttpResponse.getEntity()).thenReturn(new org.apache.http.entity.ByteArrayEntity(reportBody));
+		when(objectFactory.getGitFolderConfigPath()).thenReturn("config");
+
+		jenkins.model.ArtifactManager artifactManager = mock(jenkins.model.ArtifactManager.class);
+		when(abstractBuild.pickArtifactManager()).thenReturn(artifactManager);
+		return artifactManager;
+	}
+
+	@Test
+	public void testSastPdfReportIsArchivedWhenRequested() throws Exception {
+		File workspace = Files.createTempDirectory("sec1-ws").toFile();
+		jenkins.model.ArtifactManager artifactManager = prepareSastReportSetup(workspace, 200, PDF);
+		plugin.setRunSca(false);
+		plugin.setArchiveReport(true);
+
+		assertTrue(plugin.perform(abstractBuild, launcher, buildListener));
+
+		verify(objectFactory).createHttpPost("https://api.sec1.io/rest/sast/asset/report/status");
+		verify(objectFactory).createHttpPost("https://api.sec1.io/rest/sast/report/generate");
+		assertEquals(new String(PDF, StandardCharsets.ISO_8859_1), new String(
+				Files.readAllBytes(new File(workspace, "sec1-sast-report.pdf").toPath()), StandardCharsets.ISO_8859_1));
+		verify(artifactManager).archive(any(FilePath.class), eq(launcher), any(),
+				eq(Map.of("sec1-sast-report.pdf", "sec1-sast-report.pdf")));
+	}
+
+	@Test
+	public void testSastPdfReportIsNotRequestedByDefault() throws Exception {
+		File workspace = Files.createTempDirectory("sec1-ws").toFile();
+		jenkins.model.ArtifactManager artifactManager = prepareSastReportSetup(workspace, 200, PDF);
+		plugin.setRunSca(false);
+
+		assertTrue(plugin.perform(abstractBuild, launcher, buildListener));
+
+		verify(objectFactory, never()).createHttpPost("https://api.sec1.io/rest/sast/report/generate");
+		verify(artifactManager, never()).archive(any(), any(), any(), any());
+		assertFalse(new File(workspace, "sec1-sast-report.pdf").exists());
+	}
+
+	@Test
+	public void testSastPdfReportFailureOnlyWarns() throws Exception {
+		File workspace = Files.createTempDirectory("sec1-ws").toFile();
+		jenkins.model.ArtifactManager artifactManager = prepareSastReportSetup(workspace, 403,
+				"{\"error\":\"forbidden\"}".getBytes(StandardCharsets.UTF_8));
+		plugin.setRunSca(false);
+		plugin.setArchiveReport(true);
+
+		assertTrue(plugin.perform(abstractBuild, launcher, buildListener));
+
+		verify(artifactManager, never()).archive(any(), any(), any(), any());
+		assertFalse(new File(workspace, "sec1-sast-report.pdf").exists());
+		verify(abstractBuild, never()).setResult(any());
+	}
+
+	@Test
+	public void testScaPdfReportIsArchivedWhenRequested() throws Exception {
+		File workspace = Files.createTempDirectory("sec1-ws").toFile();
+		jenkins.model.ArtifactManager artifactManager = prepareSastReportSetup(workspace, 200, PDF);
+		// Same three replies, but for SCA: trigger, status, report.
+		when(sastHttpEntity.getContent()).thenReturn(sampleInitiateScaScanResponseStream);
+		when(sastStatusHttpEntity.getContent()).thenReturn(sampleScaReportStream);
+		plugin.setRunSast(false);
+		plugin.setArchiveReport(true);
+
+		assertTrue(plugin.perform(abstractBuild, launcher, buildListener));
+
+		verify(objectFactory).createHttpPost(
+				"https://api.sec1.io/rest/foss/report/166c316c9df7-efc4-4de4-87d4-5qr454sd/pdf?type=sca-security-assessment");
+		assertTrue(new File(workspace, "sec1-sca-report.pdf").exists());
+		verify(artifactManager).archive(any(FilePath.class), eq(launcher), any(),
+				eq(Map.of("sec1-sca-report.pdf", "sec1-sca-report.pdf")));
+	}
+
+	@Test
+	public void testTriggerFailureNamesStatusAndReason() {
+		String url = "https://api.sec1.io/rest/foss/ascan";
+		assertEquals("could not reach the Sec1 API at " + url + ". Check SEC1_INSTANCE_URL and the network.",
+				SecOneScannerPlugin.triggerFailure(null, url));
+		assertEquals("HTTP 403, the Sec1 API key was rejected. Check that the credential holds a current API key."
+				+ " Response: 401 Unauthorized",
+				SecOneScannerPlugin.triggerFailure(new SecOneScannerPlugin.ScanTriggerResponse(403, "401 Unauthorized\n"), url));
+		assertEquals("HTTP 500: {\"error\":\"boom\"}",
+				SecOneScannerPlugin.triggerFailure(new SecOneScannerPlugin.ScanTriggerResponse(500, "{\"error\":\"boom\"}"), url));
+		assertEquals("HTTP 502.", SecOneScannerPlugin.triggerFailure(new SecOneScannerPlugin.ScanTriggerResponse(502, null), url));
+	}
+
+	@Test
+	public void testReportIdFromUrl() {
+		assertEquals("65568086-f399-4bfd-90da-f75010857713", SecOneScannerPlugin.reportIdFromUrl(
+				"https://unified.sec1.io/dashboard-scan-details/65568086-f399-4bfd-90da-f75010857713"));
+		assertEquals("65568086-f399-4bfd-90da-f75010857713", SecOneScannerPlugin.reportIdFromUrl(
+				"https://unified.sec1.io/dashboard-scan-details/65568086-f399-4bfd-90da-f75010857713/"));
+		assertNull(SecOneScannerPlugin.reportIdFromUrl(""));
+		assertNull(SecOneScannerPlugin.reportIdFromUrl(null));
+		assertNull(SecOneScannerPlugin.reportIdFromUrl("https://unified.sec1.io/dashboard"));
 	}
 
 	@Test
