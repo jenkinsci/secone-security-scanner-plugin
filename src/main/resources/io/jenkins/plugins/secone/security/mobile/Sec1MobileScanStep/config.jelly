@@ -6,6 +6,12 @@
     <f:entry title="Binary Path" field="binaryPath">
         <f:textbox/>
     </f:entry>
+    <f:entry title="Artifactory URL" field="artifactUrl">
+        <f:textbox/>
+    </f:entry>
+    <f:entry title="Artifact SHA-256" field="artifactSha256">
+        <f:textbox/>
+    </f:entry>
     <f:entry title="App Name" field="appName">
         <f:textbox/>
     </f:entry>
@@ -81,8 +87,14 @@
         <f:entry title="Timeout (minutes)" field="timeoutMinutes">
             <f:number default="45" min="1"/>
         </f:entry>
+        <f:entry title="Resubmit once if the scan is interrupted" field="resubmitPartial">
+            <f:checkbox default="true"/>
+        </f:entry>
         <f:entry title="Archive findings as a build artifact" field="archiveFindings">
             <f:checkbox default="true"/>
+        </f:entry>
+        <f:entry title="Archive the PDF report as a build artifact" field="archiveReport">
+            <f:checkbox/>
         </f:entry>
     </f:advanced>
 </j:jelly>

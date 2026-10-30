@@ -2,6 +2,8 @@ package io.jenkins.plugins.secone.security.mobile;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -54,15 +56,31 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 	static final String DEFAULT_BASE_URL = "https://api.sec1.io/rest/ai-sast-mobile";
 	static final String DEFAULT_CONSOLE_URL = "https://unified.sec1.io";
 	static final String FINDINGS_FILE = "sec1-mobile-findings.json";
+	static final String REPORT_FILE = "sec1-mobile-report.pdf";
 	private static final String DEFAULT_CREDENTIALS_ID = "SEC1_API_KEY";
 	private static final int FINDINGS_PAGE = 500;
 	private static final int MAX_BACKOFF_SECONDS = 60;
+	private static final String[] BINARY_EXTENSIONS = { ".apk", ".aab", ".xapk", ".ipa" };
+
+	/** Wait before retrying an Artifactory submission; lowered only by tests. */
+	static int submitRetrySeconds = 10;
+
+	/** Wait between requests while the PDF report is being generated; lowered only by tests. */
+	static int reportRetrySeconds = 10;
+
+	/** How long to wait for the PDF report to be generated. */
+	static int reportTimeoutMinutes = 10;
+
+	/** Serves the PDF when the scanner nodes do not; changed only by tests. */
+	static String reportFallbackBase = DEFAULT_BASE_URL;
 
 	/** Lower bound on the poll interval; lowered only by tests. */
 	static int minPollSeconds = 10;
 
 	private final String apiCredentialsId;
 	private final String binaryPath;
+	private String artifactUrl;
+	private String artifactSha256;
 	private String baseUrl;
 	private String appName;
 	private String appVersion;
@@ -77,6 +95,8 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 	private String actionOnThresholdBreached;
 	private Integer minScore;
 	private Boolean archiveFindings;
+	private Boolean resubmitPartial;
+	private Boolean archiveReport;
 
 	@DataBoundConstructor
 	public Sec1MobileScanStep(String apiCredentialsId, String binaryPath) {
@@ -90,6 +110,25 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 
 	public String getBinaryPath() {
 		return binaryPath;
+	}
+
+	public String getArtifactUrl() {
+		return artifactUrl;
+	}
+
+	/** Artifactory download URL; the scanner node fetches the binary itself instead of an upload. */
+	@DataBoundSetter
+	public void setArtifactUrl(String artifactUrl) {
+		this.artifactUrl = StringUtils.trimToNull(artifactUrl);
+	}
+
+	public String getArtifactSha256() {
+		return artifactSha256;
+	}
+
+	@DataBoundSetter
+	public void setArtifactSha256(String artifactSha256) {
+		this.artifactSha256 = StringUtils.trimToNull(artifactSha256);
 	}
 
 	public String getBaseUrl() {
@@ -227,6 +266,32 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		return "fail";
 	}
 
+	/** Download the executive PDF report and archive it with the build. Default false. */
+	public boolean isArchiveReport() {
+		return archiveReport != null && archiveReport;
+	}
+
+	@DataBoundSetter
+	public void setArchiveReport(boolean archiveReport) {
+		this.archiveReport = archiveReport;
+	}
+
+	/** Resubmit once when a scan is interrupted ('partial'); never for a timeout. Default true. */
+	public boolean isResubmitPartial() {
+		return resubmitPartial == null || resubmitPartial;
+	}
+
+	@DataBoundSetter
+	public void setResubmitPartial(boolean resubmitPartial) {
+		this.resubmitPartial = resubmitPartial;
+	}
+
+	/* A scan stopped by a time limit would hit the same limit again; only interruptions are worth a retry. */
+	static boolean isTimeoutReason(String error) {
+		return StringUtils.containsIgnoreCase(error, "timeout") || StringUtils.containsIgnoreCase(error, "timed_out")
+				|| StringUtils.containsIgnoreCase(error, "over_1h");
+	}
+
 	public boolean isArchiveFindings() {
 		return archiveFindings == null || archiveFindings;
 	}
@@ -243,17 +308,49 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		log.println("=============== Sec1 Mobile Security Scan ===============");
 
 		String apiKey = resolveApiKey(run, log);
-		String base = StringUtils.removeEnd(StringUtils.defaultIfBlank(env.expand(StringUtils.defaultString(baseUrl)),
-				StringUtils.defaultIfBlank(env.get("SEC1_MOBILE_BASE_URL"), DEFAULT_BASE_URL)), "/");
+		// Never derived from SEC1_INSTANCE_URL: hybrid deployments send binaries to the customer's
+		// scanner nodes (load balancer), while SCA/SAST keep using the control plane.
+		String base = StringUtils.trimToNull(env.expand(StringUtils.defaultString(baseUrl)));
+		String baseSource = "baseUrl";
+		if (base == null) {
+			base = StringUtils.trimToNull(env.get("SEC1_MOBILE_BASE_URL"));
+			baseSource = "SEC1_MOBILE_BASE_URL";
+		}
+		if (base == null) {
+			base = DEFAULT_BASE_URL;
+			baseSource = "default, Sec1 SaaS";
+		}
+		base = StringUtils.removeEnd(base, "/");
 		String consoleUrl = StringUtils.removeEnd(
 				StringUtils.defaultIfBlank(env.get("SEC1_DASHBOARD_URL"), DEFAULT_CONSOLE_URL), "/");
-		FilePath binary = resolveBinary(workspace, env.expand(binaryPath));
+		String artifact = StringUtils.trimToNull(env.expand(StringUtils.defaultString(artifactUrl)));
+		String pattern = StringUtils.trimToNull(env.expand(StringUtils.defaultString(binaryPath)));
+		FilePath binary = null;
+		String sha256 = StringUtils.lowerCase(StringUtils.trimToNull(env.expand(StringUtils.defaultString(artifactSha256))));
+		boolean shaFromWorkspace = false;
+		if (artifact != null) {
+			validateArtifactUrl(artifact);
+			// With an artifact URL the workspace binary is only used for its checksum, never uploaded.
+			if (pattern != null) {
+				binary = resolveBinary(workspace, pattern);
+				if (sha256 == null) {
+					sha256 = binary.act(new MobileApi.Sha256());
+					shaFromWorkspace = true;
+				}
+			}
+			if (sha256 != null && !sha256.matches("[0-9a-f]{64}")) {
+				throw new AbortException("artifactSha256 must be the 64-character hex SHA-256 of the binary.");
+			}
+		} else {
+			binary = resolveBinary(workspace, pattern);
+		}
+		String fileName = artifact != null ? artifactFileName(artifact) : binary.getName();
 		String userAgent = "Sec1Jenkins/" + pluginVersion();
 		VirtualChannel channel = workspace.getChannel();
 
 		Map<String, String> fields = new LinkedHashMap<>();
 		fields.put("app_name", StringUtils.defaultIfBlank(env.expand(StringUtils.defaultString(appName)),
-				StringUtils.substringBeforeLast(binary.getName(), ".")));
+				StringUtils.substringBeforeLast(fileName, ".")));
 		fields.put("version", StringUtils.defaultIfBlank(env.expand(StringUtils.defaultString(appVersion)),
 				env.get("BUILD_NUMBER")));
 		fields.put("environment", env.expand(StringUtils.defaultString(environment)));
@@ -262,15 +359,25 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		fields.put("source", StringUtils.left(StringUtils.defaultIfBlank(env.expand(StringUtils.defaultString(source)),
 				"jenkins:" + env.get("JOB_NAME", "job") + "#" + env.get("BUILD_NUMBER", "0")), 200));
 
-		log.println("Base URL               " + base);
-		log.println("Binary                 " + binary.getRemote() + " (" + binary.length() + " bytes)");
+		log.println("Base URL               " + base + " (" + baseSource + ")");
+		if (artifact != null) {
+			log.println("Artifact URL           " + artifact);
+			log.println("Artifact SHA-256       " + (sha256 == null ? "not set (verified against Artifactory's checksum)"
+					: sha256 + (shaFromWorkspace ? " (from " + binary.getRemote() + ")" : "")));
+		} else {
+			log.println("Binary                 " + binary.getRemote() + " (" + binary.length() + " bytes)");
+		}
 		log.println("App                    " + fields.get("app_name") + " " + fields.get("version")
 				+ (StringUtils.isNotBlank(fields.get("environment")) ? " [" + fields.get("environment") + "]" : ""));
 		log.println("Scan Type              " + getScanType());
 
+		// One budget for the whole step, a resubmission included, so it fits inside a stage timeout().
+		long deadline = System.currentTimeMillis() + getTimeoutMinutes() * 60_000L;
 		JSONObject record = null;
 		for (int attempt = 1; attempt <= 2; attempt++) {
-			JSONObject created = submit(binary, base, apiKey, userAgent, fields, log);
+			JSONObject created = artifact != null
+					? submitArtifact(channel, base, apiKey, userAgent, fields, artifact, sha256, log)
+					: submit(binary, base, apiKey, userAgent, fields, log);
 			String id = created.getString("id");
 			log.println("Scan Id                " + id);
 			String node = created.optString("scanner_id", "");
@@ -286,12 +393,21 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 			}
 			log.println("Console                " + consoleLink(created, consoleUrl, id));
 
-			record = poll(channel, base, id, apiKey, userAgent, log);
+			record = poll(channel, base, id, apiKey, userAgent, deadline, log);
 			String status = record.optString("status");
 			if ("partial".equals(status) && attempt == 1) {
-				log.println("Scan ended 'partial' (" + record.optString("error", "no reason given")
-						+ "); resubmitting once.");
-				continue;
+				String reason = StringUtils.defaultIfBlank(record.optString("error", ""), "no reason given");
+				if (!isResubmitPartial()) {
+					log.println("Scan ended 'partial' (" + reason + "); not resubmitting (resubmitPartial is false).");
+				} else if (isTimeoutReason(reason)) {
+					log.println("Scan ended 'partial' (" + reason + "): the scanner node stopped it at its time limit."
+							+ " Not resubmitting, since a new scan would hit the same limit.");
+				} else if (System.currentTimeMillis() >= deadline) {
+					log.println("Scan ended 'partial' (" + reason + "); no time left within timeoutMinutes to resubmit.");
+				} else {
+					log.println("Scan ended 'partial' (" + reason + "); resubmitting once.");
+					continue;
+				}
 			}
 			break;
 		}
@@ -307,8 +423,11 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		case "cancelled":
 			throw new InterruptedException("Sec1 mobile scan " + id + " was cancelled.");
 		default:
-			throw new AbortException("Sec1 mobile scan " + id + " ended '" + status + "': "
-					+ StringUtils.defaultIfBlank(record.optString("error", ""), "no reason given"));
+			String reason = StringUtils.defaultIfBlank(record.optString("error", ""), "no reason given");
+			throw new AbortException("Sec1 mobile scan " + id + " ended '" + status + "': " + reason
+					+ ("partial".equals(status) && isTimeoutReason(reason)
+							? " (the scanner node's time limit for one scan was reached; raise it with the node operator)"
+							: ""));
 		}
 
 		JSONObject summary = record.optJSONObject("summary");
@@ -337,6 +456,9 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 
 		if (isArchiveFindings()) {
 			archiveFindings(run, workspace, launcher, listener, channel, base, id, apiKey, userAgent, log);
+		}
+		if (isArchiveReport()) {
+			archiveReport(run, workspace, launcher, listener, base, id, apiKey, userAgent, log);
 		}
 
 		if (!isThresholdActive()) {
@@ -370,7 +492,12 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 	private JSONObject submit(FilePath binary, String base, String apiKey, String userAgent,
 			Map<String, String> fields, PrintStream log) throws IOException, InterruptedException {
 		log.println("Uploading binary...");
-		MobileApi.Response r = binary.act(new MobileApi.Submit(base + "/api/v1/scans", apiKey, userAgent, fields));
+		MobileApi.Response r;
+		try {
+			r = binary.act(new MobileApi.Submit(base + "/api/v1/scans", apiKey, userAgent, fields));
+		} catch (IOException e) {
+			throw unreachable(base, e);
+		}
 		if (!r.isSuccess()) {
 			// Not retried: a retry after a partially processed upload would start a second scan.
 			throw new AbortException(describeError("Scan submission", r));
@@ -378,10 +505,52 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		return new JSONObject(r.body);
 	}
 
+	/*
+	 * Submit by Artifactory URL (no upload). A failed submit never creates a
+	 * scan, so transient failures, such as the node not reaching Artifactory
+	 * (502 artifactory_unreachable), are safe to retry.
+	 */
+	private JSONObject submitArtifact(VirtualChannel channel, String base, String apiKey, String userAgent,
+			Map<String, String> fields, String artifact, String sha256, PrintStream log)
+			throws IOException, InterruptedException {
+		JSONObject body = new JSONObject();
+		body.put("artifact_url", artifact);
+		if (sha256 != null) {
+			body.put("artifact_sha256", sha256);
+		}
+		for (Map.Entry<String, String> field : fields.entrySet()) {
+			if (StringUtils.isNotEmpty(field.getValue())) {
+				body.put(field.getKey(), field.getValue());
+			}
+		}
+		log.println("Submitting Artifactory URL...");
+		for (int attempt = 1;; attempt++) {
+			MobileApi.Response r;
+			try {
+				r = channel.call(new MobileApi.PostJson(base + "/api/v1/scans", apiKey, userAgent, body.toString()));
+			} catch (IOException e) {
+				if (attempt >= 3) {
+					throw unreachable(base, e);
+				}
+				log.println("Scan submission failed (" + describeException(e) + "); retrying.");
+				Thread.sleep(submitRetrySeconds * attempt * 1000L);
+				continue;
+			}
+			if (r.isSuccess()) {
+				return new JSONObject(r.body);
+			}
+			boolean transientError = r.status == 429 || r.status == 502 || r.status == 503 || r.status == 504;
+			if (!transientError || attempt >= 3) {
+				throw new AbortException(describeError("Scan submission", r));
+			}
+			log.println(describeError("Scan submission", r) + "; retrying.");
+			Thread.sleep(submitRetrySeconds * attempt * 1000L);
+		}
+	}
+
 	private JSONObject poll(VirtualChannel channel, String base, String id, String apiKey, String userAgent,
-			PrintStream log) throws IOException, InterruptedException {
+			long deadline, PrintStream log) throws IOException, InterruptedException {
 		int interval = Math.max(minPollSeconds, getPollIntervalSeconds());
-		long deadline = System.currentTimeMillis() + getTimeoutMinutes() * 60_000L;
 		DateTimeFormatter clock = DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
 		String lastLine = "";
 		int wait = interval;
@@ -392,7 +561,7 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 					r = channel.call(new MobileApi.Call("GET", base + "/api/v1/scans/" + id, apiKey, userAgent));
 				} catch (IOException e) {
 					r = null;
-					log.println("Status check failed (" + e.getMessage() + "); retrying.");
+					log.println("Status check failed (" + describeException(e) + "); retrying.");
 				}
 				if (r != null && (r.status == 401 || r.status == 403 || r.status == 404)) {
 					throw new AbortException(describeError("Status check", r));
@@ -524,6 +693,59 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		log.println("Findings Archived      " + FINDINGS_FILE + " (" + all.length() + " findings)");
 	}
 
+	/*
+	 * The executive PDF is generated on request, so the server may answer "not
+	 * ready" first. Hybrid scanner nodes may not serve it at all, in which case
+	 * it comes from the control plane. A missing report never changes the
+	 * build result.
+	 */
+	private void archiveReport(Run<?, ?> run, FilePath workspace, Launcher launcher, TaskListener listener,
+			String base, String id, String apiKey, String userAgent, PrintStream log) throws InterruptedException {
+		List<String> bases = new java.util.ArrayList<>();
+		bases.add(base);
+		if (reportFallbackBase != null && !StringUtils.removeEnd(reportFallbackBase, "/").equals(base)) {
+			bases.add(StringUtils.removeEnd(reportFallbackBase, "/"));
+		}
+		FilePath target = workspace.child(REPORT_FILE);
+		long deadline = System.currentTimeMillis() + reportTimeoutMinutes * 60_000L;
+		log.println("Downloading PDF report...");
+		try {
+			for (int i = 0; i < bases.size(); i++) {
+				String url = bases.get(i) + "/api/v1/scans/" + id + "/reports/executive";
+				while (true) {
+					MobileApi.Response r = target.act(new MobileApi.Download(url, apiKey, userAgent));
+					if (r.status == 200) { // 202 means still generating, not done
+						run.pickArtifactManager().archive(workspace, launcher,
+								jenkins.util.BuildListenerAdapter.wrap(listener),
+								Collections.singletonMap(REPORT_FILE, REPORT_FILE));
+						log.println("Report Archived        " + REPORT_FILE + " (" + (target.length() / 1024) + " KB)");
+						return;
+					}
+					boolean notReady = r.status == 202 || r.status == 409 || r.status == 425 || r.status == 429
+							|| r.status == 503;
+					if (notReady && System.currentTimeMillis() < deadline) {
+						int wait = reportRetrySeconds;
+						if (r.body != null && r.body.matches("retry-after:\\d+")) {
+							wait = Math.max(1, Math.min(60, Integer.parseInt(r.body.substring(12))));
+						}
+						Thread.sleep(wait * 1000L);
+						continue;
+					}
+					boolean notServedHere = r.status == 404 || r.status == 405 || r.status == 501;
+					if (notServedHere && i + 1 < bases.size()) {
+						break; // try the next base, e.g. the control plane for hybrid scanner nodes
+					}
+					log.println("WARNING: PDF report not archived: " + (r.status == 0 ? r.body
+							: describeError("Report download", r)) + ". The build result is not affected.");
+					return;
+				}
+			}
+		} catch (IOException e) {
+			log.println("WARNING: PDF report not archived (" + describeException(e)
+					+ "). The build result is not affected.");
+		}
+	}
+
 	static boolean isTerminal(String status) {
 		return "completed".equals(status) || "failed".equals(status) || "cancelled".equals(status)
 				|| "partial".equals(status);
@@ -539,18 +761,78 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		return consoleUrl + "/mobile-security/applications/" + StringUtils.left(sha, 12) + "?scan=" + id;
 	}
 
+	/*
+	 * Network errors from the JDK HTTP client often carry no message (a refused
+	 * or timed-out connection is a bare ConnectException), so name the
+	 * exception types along the cause chain instead of printing "null".
+	 */
+	static String describeException(Throwable e) {
+		StringBuilder sb = new StringBuilder();
+		java.util.Set<Throwable> seen = new java.util.HashSet<>();
+		for (Throwable t = e; t != null && seen.add(t); t = t.getCause()) {
+			String part = t.getClass().getSimpleName()
+					+ (StringUtils.isNotBlank(t.getMessage()) ? ": " + t.getMessage() : "");
+			if (sb.indexOf(part) < 0) {
+				sb.append(sb.length() == 0 ? "" : " <- ").append(part);
+			}
+		}
+		return sb.toString();
+	}
+
+	static AbortException unreachable(String base, IOException e) {
+		return new AbortException("Could not reach the Sec1 Mobile Security API at " + base + " ("
+				+ describeException(e) + "). Check baseUrl or SEC1_MOBILE_BASE_URL, and that this agent can reach"
+				+ " that address (firewall, proxy, DNS).");
+	}
+
 	static String describeError(String what, MobileApi.Response r) {
 		String code = "";
 		String message = "";
 		try {
 			JSONObject err = new JSONObject(r.body);
-			code = err.optString("error", "");
+			code = StringUtils.defaultIfBlank(err.optString("code", ""), err.optString("error", ""));
 			message = StringUtils.defaultIfBlank(err.optString("message", ""), err.optString("detail", ""));
 		} catch (RuntimeException ignored) {
 			message = StringUtils.left(StringUtils.defaultString(r.body).trim(), 200);
 		}
 		String hint;
-		switch (r.status) {
+		switch (code) {
+		case "artifactory_not_configured":
+		case "artifact_url_not_allowed":
+		case "artifactory_auth_failed":
+			hint = "Artifactory configuration on the scanner node; raise with the node operator";
+			break;
+		case "artifact_not_found":
+			hint = "Artifactory has no file at this URL; check the URL the publish step produced";
+			break;
+		case "artifact_checksum_mismatch":
+			hint = "artifactSha256 does not match Artifactory's checksum; investigate the publish step";
+			break;
+		case "artifact_too_large":
+			hint = "artifact exceeds the scanner node's size limit";
+			break;
+		case "artifactory_unreachable":
+			hint = "the scanner node could not reach Artifactory";
+			break;
+		default:
+			hint = statusHint(r.status);
+		}
+		StringBuilder sb = new StringBuilder(what).append(" failed: HTTP ").append(r.status);
+		if (StringUtils.isNotBlank(code)) {
+			sb.append(" ").append(code);
+		}
+		if (StringUtils.isNotBlank(message)) {
+			sb.append(" - ").append(message);
+		}
+		if (StringUtils.isNotBlank(hint)) {
+			sb.append(" (").append(hint).append(")");
+		}
+		return sb.toString();
+	}
+
+	private static String statusHint(int status) {
+		String hint;
+		switch (status) {
 		case 401:
 			hint = "check the API key credential";
 			break;
@@ -566,17 +848,33 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 		default:
 			hint = "";
 		}
-		StringBuilder sb = new StringBuilder(what).append(" failed: HTTP ").append(r.status);
-		if (StringUtils.isNotBlank(code)) {
-			sb.append(" ").append(code);
+		return hint;
+	}
+
+	/* The node enforces its own Artifactory base and repository; this catches obvious mistakes early. */
+	static void validateArtifactUrl(String url) throws AbortException {
+		URI uri;
+		try {
+			uri = new URI(url);
+		} catch (URISyntaxException e) {
+			throw new AbortException("artifactUrl is not a valid URL: " + e.getMessage());
 		}
-		if (StringUtils.isNotBlank(message)) {
-			sb.append(" - ").append(message);
+		String scheme = StringUtils.lowerCase(uri.getScheme());
+		if (!("http".equals(scheme) || "https".equals(scheme)) || StringUtils.isBlank(uri.getHost())) {
+			throw new AbortException("artifactUrl must be an http(s) Artifactory download URL.");
 		}
-		if (StringUtils.isNotBlank(hint)) {
-			sb.append(" (").append(hint).append(")");
+		if (uri.getRawUserInfo() != null) {
+			throw new AbortException("artifactUrl must not contain credentials; the scanner node uses its own"
+					+ " Artifactory credential.");
 		}
-		return sb.toString();
+		String path = StringUtils.lowerCase(StringUtils.defaultString(uri.getPath()));
+		if (!StringUtils.endsWithAny(path, BINARY_EXTENSIONS)) {
+			throw new AbortException("artifactUrl must point to a .apk, .aab, .xapk or .ipa file.");
+		}
+	}
+
+	static String artifactFileName(String url) {
+		return StringUtils.substringAfterLast(URI.create(url).getPath(), "/");
 	}
 
 	private String resolveApiKey(Run<?, ?> run, PrintStream log) throws AbortException {
@@ -595,7 +893,8 @@ public class Sec1MobileScanStep extends Builder implements SimpleBuildStep {
 
 	static FilePath resolveBinary(FilePath workspace, String pattern) throws IOException, InterruptedException {
 		if (StringUtils.isBlank(pattern)) {
-			throw new AbortException("binaryPath is required: the .apk/.aab/.ipa to scan, relative to the workspace.");
+			throw new AbortException("Set binaryPath (the .apk/.aab/.ipa to scan, relative to the workspace)"
+					+ " or artifactUrl (its Artifactory download URL).");
 		}
 		FilePath direct = workspace.child(pattern);
 		if (!pattern.contains("*") && !pattern.contains("?") && direct.exists() && !direct.isDirectory()) {

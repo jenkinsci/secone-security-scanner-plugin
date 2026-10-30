@@ -1,3 +1,8 @@
 <div>
-    Fail the build if the scan has not finished within this time. Default 45 minutes. The scan itself keeps running and stays visible in the console.
+    Maximum time the step waits for the scan, in total: an automatic resubmission
+    counts against the same budget. Default 45 minutes. When it runs out the build
+    fails, and the scan keeps running and stays visible in the console.
+    <p>
+    If the stage is wrapped in a Pipeline <code>timeout(...)</code>, give that a few
+    minutes more than this value, so this step reports the timeout first.
 </div>

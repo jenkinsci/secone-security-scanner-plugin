@@ -13,6 +13,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
@@ -106,6 +108,106 @@ final class MobileApi {
 			HttpResponse<String> response = client().send(request,
 					HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 			return new Response(response.statusCode(), response.body());
+		}
+	}
+
+	/** Submits a scan by Artifactory URL: a JSON {@code POST /api/v1/scans}, no upload. */
+	static final class PostJson extends MasterToSlaveCallable<Response, IOException> {
+		private static final long serialVersionUID = 1L;
+		private final String url;
+		private final String apiKey;
+		private final String userAgent;
+		private final String json;
+
+		PostJson(String url, String apiKey, String userAgent, String json) {
+			this.url = url;
+			this.apiKey = apiKey;
+			this.userAgent = userAgent;
+			this.json = json;
+		}
+
+		@Override
+		public Response call() throws IOException {
+			HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(120))
+					.header("sec1-api-key", apiKey).header("User-Agent", userAgent)
+					.header("Accept", "application/json").header("Content-Type", "application/json")
+					.POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8)).build();
+			try {
+				HttpResponse<String> response = client().send(request,
+						HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+				return new Response(response.statusCode(), response.body());
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new IOException("Interrupted while calling " + url, e);
+			}
+		}
+	}
+
+	/**
+	 * Downloads the PDF report into the target file on the agent. On success
+	 * the body is empty; status 0 means the server answered with something
+	 * that is not a PDF. For "not ready" answers the body carries the
+	 * server's Retry-After as {@code retry-after:<seconds>}, when given.
+	 */
+	static final class Download extends MasterToSlaveFileCallable<Response> {
+		private static final long serialVersionUID = 1L;
+		private final String url;
+		private final String apiKey;
+		private final String userAgent;
+
+		Download(String url, String apiKey, String userAgent) {
+			this.url = url;
+			this.apiKey = apiKey;
+			this.userAgent = userAgent;
+		}
+
+		@Override
+		public Response invoke(File target, VirtualChannel channel) throws IOException, InterruptedException {
+			HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMinutes(5))
+					.header("sec1-api-key", apiKey).header("User-Agent", userAgent)
+					.header("Accept", "application/pdf").GET().build();
+			HttpResponse<byte[]> response = client().send(request, HttpResponse.BodyHandlers.ofByteArray());
+			byte[] body = response.body();
+			int status = response.statusCode();
+			if (status == 200) {
+				if (body.length < 5 || !new String(body, 0, 5, StandardCharsets.ISO_8859_1).equals("%PDF-")) {
+					return new Response(0, "the server did not return a PDF ("
+							+ response.headers().firstValue("Content-Type").orElse("no content type") + ")");
+				}
+				java.nio.file.Files.write(target.toPath(), body);
+				return new Response(200, "");
+			}
+			if (status == 202 || status == 409 || status == 425 || status == 429 || status == 503) {
+				String retryAfter = response.headers().firstValue("Retry-After").orElse("");
+				return new Response(status, retryAfter.matches("\\d+") ? "retry-after:" + retryAfter : "");
+			}
+			return new Response(status, new String(body, StandardCharsets.UTF_8));
+		}
+	}
+
+	/** Hex SHA-256 of the binary, computed on the agent. */
+	static final class Sha256 extends MasterToSlaveFileCallable<String> {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+		public String invoke(File binary, VirtualChannel channel) throws IOException {
+			MessageDigest digest;
+			try {
+				digest = MessageDigest.getInstance("SHA-256");
+			} catch (NoSuchAlgorithmException e) {
+				throw new IOException(e);
+			}
+			try (InputStream in = new FileInputStream(binary)) {
+				byte[] buf = new byte[64 * 1024];
+				for (int n; (n = in.read(buf)) > 0;) {
+					digest.update(buf, 0, n);
+				}
+			}
+			StringBuilder hex = new StringBuilder();
+			for (byte b : digest.digest()) {
+				hex.append(String.format("%02x", b));
+			}
+			return hex.toString();
 		}
 	}
 

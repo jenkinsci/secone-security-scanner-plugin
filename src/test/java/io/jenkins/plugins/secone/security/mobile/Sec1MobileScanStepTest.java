@@ -1,6 +1,7 @@
 package io.jenkins.plugins.secone.security.mobile;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -9,6 +10,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -50,18 +52,30 @@ class Sec1MobileScanStepTest {
 	/** Scan records returned by successive status polls; the last one repeats. */
 	private final Deque<JSONObject> polls = new ArrayDeque<>();
 	private final List<String> submitBodies = new ArrayList<>();
+	private final List<String> submitTypes = new ArrayList<>();
 	private final AtomicInteger deletes = new AtomicInteger();
 	private int submitStatus = 201;
+	private String submitError = "file_too_large";
+	/** How many submissions fail with submitStatus before the server accepts one. */
+	private int submitFailures = Integer.MAX_VALUE;
 	/** Mimics the server race: the first cancel is acknowledged but the scan keeps running. */
 	private boolean ignoreFirstCancel = false;
 	private volatile boolean cancelled = false;
 	private int totalFindings = 0;
+	/** Replies to successive PDF report requests on the base URL; the last one repeats. */
+	private final Deque<Integer> reportReplies = new ArrayDeque<>();
+	private final List<String> reportPaths = new ArrayList<>();
+	private static final byte[] PDF = "%PDF-1.7 sec1 report".getBytes(StandardCharsets.ISO_8859_1);
 
 	@BeforeEach
 	void startServer() throws IOException {
 		Sec1MobileScanStep.minPollSeconds = 0;
+		Sec1MobileScanStep.submitRetrySeconds = 0;
+		Sec1MobileScanStep.reportRetrySeconds = 0;
+		Sec1MobileScanStep.reportFallbackBase = null;
 		server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
 		server.createContext("/api/v1/scans", this::handle);
+		server.createContext("/control-plane/api/v1/scans", this::handle);
 		server.start();
 		baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
 	}
@@ -70,6 +84,9 @@ class Sec1MobileScanStepTest {
 	void stopServer() {
 		server.stop(0);
 		Sec1MobileScanStep.minPollSeconds = 10;
+		Sec1MobileScanStep.submitRetrySeconds = 10;
+		Sec1MobileScanStep.reportRetrySeconds = 10;
+		Sec1MobileScanStep.reportFallbackBase = Sec1MobileScanStep.DEFAULT_BASE_URL;
 	}
 
 	private void handle(HttpExchange ex) throws IOException {
@@ -81,8 +98,9 @@ class Sec1MobileScanStepTest {
 		String method = ex.getRequestMethod();
 		if ("POST".equals(method) && path.equals("/api/v1/scans")) {
 			submitBodies.add(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.ISO_8859_1));
-			if (submitStatus != 201) {
-				reply(ex, submitStatus, new JSONObject().put("error", "file_too_large").put("message", "over limit"));
+			submitTypes.add(ex.getRequestHeaders().getFirst("Content-Type"));
+			if (submitStatus != 201 && submitBodies.size() <= submitFailures) {
+				reply(ex, submitStatus, new JSONObject().put("code", submitError).put("message", "over limit"));
 				return;
 			}
 			reply(ex, 201, record("pending", null));
@@ -90,6 +108,21 @@ class Sec1MobileScanStepTest {
 			int n = deletes.incrementAndGet();
 			cancelled = !(ignoreFirstCancel && n == 1);
 			reply(ex, 200, record("cancelled", null));
+		} else if (path.endsWith("/reports/executive")) {
+			reportPaths.add(path);
+			int status = path.startsWith("/control-plane") ? 200
+					: (reportReplies.size() > 1 ? reportReplies.poll() : reportReplies.peek());
+			if (status == 200) {
+				ex.getResponseHeaders().add("Content-Type", "application/pdf");
+				ex.sendResponseHeaders(200, PDF.length);
+				try (OutputStream os = ex.getResponseBody()) {
+					os.write(PDF);
+				}
+			} else if (status == 299) {
+				reply(ex, 200, new JSONObject().put("detail", "not a pdf"));
+			} else {
+				reply(ex, status, new JSONObject().put("code", "report_error"));
+			}
 		} else if (path.endsWith("/findings")) {
 			String q = ex.getRequestURI().getQuery();
 			int offset = Integer.parseInt(q.replaceAll(".*offset=(\\d+).*", "$1"));
@@ -249,6 +282,36 @@ class Sec1MobileScanStepTest {
 	}
 
 	@Test
+	void partialAfterAStaleScanTimeoutIsNotResubmitted(JenkinsRule j) throws Exception {
+		polls.add(record("partial", null).put("error", "stale_scan_timeout"));
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, project(j, step(), "app/build/a.apk"));
+		assertEquals(1, submitBodies.size());
+		j.assertLogContains("stopped it at its time limit", b);
+		j.assertLogContains("ended 'partial': stale_scan_timeout", b);
+		j.assertLogContains("raise it with the node operator", b);
+	}
+
+	@Test
+	void resubmitPartialFalseNeverResubmits(JenkinsRule j) throws Exception {
+		polls.add(record("partial", null));
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		Sec1MobileScanStep s = step();
+		s.setResubmitPartial(false);
+		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, project(j, s, "app/build/a.apk"));
+		assertEquals(1, submitBodies.size());
+		j.assertLogContains("not resubmitting (resubmitPartial is false)", b);
+	}
+
+	@Test
+	void timeoutReasonsAreRecognised() {
+		assertTrue(Sec1MobileScanStep.isTimeoutReason("stale_scan_timeout"));
+		assertTrue(Sec1MobileScanStep.isTimeoutReason("completed:partial(timed_out)"));
+		assertFalse(Sec1MobileScanStep.isTimeoutReason("scanner_lost"));
+		assertFalse(Sec1MobileScanStep.isTimeoutReason(""));
+	}
+
+	@Test
 	void failedScanFailsTheBuildWithTheServerReason(JenkinsRule j) throws Exception {
 		polls.add(record("failed", null));
 		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, project(j, step(), "app/build/a.apk"));
@@ -333,16 +396,226 @@ class Sec1MobileScanStepTest {
 		assertTrue(cancelled);
 	}
 
+	private static final String ARTIFACT_URL =
+			"https://artifactory.example.com/artifactory/mobile-releases/my-app/42/app-release.apk";
+
+	private static Sec1MobileScanStep artifactStep(String binaryPath) {
+		Sec1MobileScanStep s = new Sec1MobileScanStep("SEC1_API_KEY", binaryPath);
+		s.setArtifactUrl(ARTIFACT_URL);
+		return s;
+	}
+
+	private static String sha256(String text) throws Exception {
+		StringBuilder hex = new StringBuilder();
+		for (byte b : MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8))) {
+			hex.append(String.format("%02x", b));
+		}
+		return hex.toString();
+	}
+
+	@Test
+	void artifactUrlIsSubmittedAsJsonWithoutAnUpload(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		Sec1MobileScanStep s = artifactStep(null);
+		s.setArtifactSha256(SHA.toUpperCase());
+		s.setEnvironment("uat");
+		FreeStyleBuild b = j.buildAndAssertSuccess(project(j, s));
+
+		assertTrue(submitTypes.get(0).startsWith("application/json"));
+		JSONObject body = new JSONObject(submitBodies.get(0));
+		assertEquals(ARTIFACT_URL, body.getString("artifact_url"));
+		assertEquals(SHA, body.getString("artifact_sha256"));
+		assertEquals("app-release", body.getString("app_name"));
+		assertEquals("1", body.getString("version"));
+		assertEquals("uat", body.getString("environment"));
+		assertEquals("owasp", body.getString("scan_type"));
+		assertEquals("jenkins:mobile-app#1", body.getString("source"));
+		assertFalse(body.has("file"));
+		assertFalse(body.has("engagement_id"));
+		j.assertLogContains("Artifact URL           " + ARTIFACT_URL, b);
+	}
+
+	@Test
+	void artifactUrlWithBinaryPathSendsTheWorkspaceChecksumOnly(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		FreeStyleBuild b = j.buildAndAssertSuccess(project(j, artifactStep("app/build/*.apk"), "app/build/a.apk"));
+		JSONObject body = new JSONObject(submitBodies.get(0));
+		assertEquals(sha256("APK-BYTES-app/build/a.apk"), body.getString("artifact_sha256"));
+		assertFalse(submitBodies.get(0).contains("APK-BYTES"));
+		assertEquals("app-release", body.getString("app_name"));
+		j.assertLogContains("(from ", b);
+	}
+
+	@Test
+	void artifactUrlWithoutChecksumOmitsIt(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		FreeStyleBuild b = j.buildAndAssertSuccess(project(j, artifactStep(null)));
+		assertFalse(new JSONObject(submitBodies.get(0)).has("artifact_sha256"));
+		j.assertLogContains("not set (verified against Artifactory's checksum)", b);
+	}
+
+	@Test
+	void invalidArtifactUrlsAreRefusedBeforeSubmitting(JenkinsRule j) throws Exception {
+		polls.add(record("completed", null));
+		Sec1MobileScanStep s = artifactStep(null);
+		s.setArtifactUrl("https://artifactory.example.com/artifactory/mobile-releases/app.zip");
+		FreeStyleProject p = project(j, s);
+		j.assertLogContains("must point to a .apk, .aab, .xapk or .ipa file", j.buildAndAssertStatus(Result.FAILURE, p));
+
+		s.setArtifactUrl("https://ci:secret@artifactory.example.com/artifactory/mobile-releases/app.apk");
+		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, p);
+		j.assertLogContains("must not contain credentials", b);
+		j.assertLogNotContains("secret@", b);
+
+		s.setArtifactUrl(ARTIFACT_URL);
+		s.setArtifactSha256("abc");
+		j.assertLogContains("64-character hex SHA-256", j.buildAndAssertStatus(Result.FAILURE, p));
+		assertTrue(submitBodies.isEmpty());
+	}
+
+	@Test
+	void artifactoryUnreachableIsRetried(JenkinsRule j) throws Exception {
+		submitStatus = 502;
+		submitError = "artifactory_unreachable";
+		submitFailures = 1;
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		FreeStyleBuild b = j.buildAndAssertSuccess(project(j, artifactStep(null)));
+		assertEquals(2, submitBodies.size());
+		j.assertLogContains("HTTP 502 artifactory_unreachable", b);
+		j.assertLogContains("the scanner node could not reach Artifactory", b);
+	}
+
+	@Test
+	void checksumMismatchFailsWithoutRetry(JenkinsRule j) throws Exception {
+		submitStatus = 422;
+		submitError = "artifact_checksum_mismatch";
+		polls.add(record("completed", null));
+		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, project(j, artifactStep(null)));
+		assertEquals(1, submitBodies.size());
+		j.assertLogContains("HTTP 422 artifact_checksum_mismatch", b);
+		j.assertLogContains("investigate the publish step", b);
+	}
+
+	@Test
+	void neitherBinaryPathNorArtifactUrlFails(JenkinsRule j) throws Exception {
+		polls.add(record("completed", null));
+		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE,
+				project(j, new Sec1MobileScanStep("SEC1_API_KEY", null)));
+		j.assertLogContains("Set binaryPath", b);
+		assertTrue(submitBodies.isEmpty());
+	}
+
+	@Test
+	void mobileBaseUrlComesFromItsOwnVariableNotTheInstanceUrl(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		hudson.slaves.EnvironmentVariablesNodeProperty global = new hudson.slaves.EnvironmentVariablesNodeProperty();
+		global.getEnvVars().put("SEC1_MOBILE_BASE_URL", baseUrl + "/");
+		global.getEnvVars().put("SEC1_INSTANCE_URL", "http://127.0.0.1:1/control-plane");
+		j.jenkins.getGlobalNodeProperties().add(global);
+		FreeStyleProject p = project(j, step(), "app/build/a.apk");
+		p.getBuildersList().get(Sec1MobileScanStep.class).setBaseUrl(null);
+		FreeStyleBuild b = j.buildAndAssertSuccess(p);
+		j.assertLogContains("Base URL               " + baseUrl + " (SEC1_MOBILE_BASE_URL)", b);
+		assertEquals(1, submitBodies.size());
+	}
+
+	@Test
+	void unreachableApiNamesTheErrorAndTheUrl(JenkinsRule j) throws Exception {
+		polls.add(record("completed", null));
+		FreeStyleProject p = project(j, artifactStep(null));
+		String dead = "http://127.0.0.1:1/ai-sast-mobile";
+		p.getBuildersList().get(Sec1MobileScanStep.class).setBaseUrl(dead);
+		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, p);
+		j.assertLogContains("Scan submission failed (ConnectException", b);
+		j.assertLogNotContains("(null)", b);
+		j.assertLogContains("Could not reach the Sec1 Mobile Security API at " + dead, b);
+		j.assertLogContains("SEC1_MOBILE_BASE_URL", b);
+	}
+
+	@Test
+	void describeExceptionNamesTypesWhenMessagesAreMissing() {
+		IOException e = new IOException(new java.net.ConnectException());
+		assertEquals("IOException: java.net.ConnectException",
+				Sec1MobileScanStep.describeException(e));
+		assertEquals("ConnectException: Connection refused",
+				Sec1MobileScanStep.describeException(new java.net.ConnectException("Connection refused")));
+	}
+
+	@Test
+	void pdfReportIsNotRequestedByDefault(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		j.buildAndAssertSuccess(project(j, step(), "app/build/a.apk"));
+		assertTrue(reportPaths.isEmpty());
+	}
+
+	@Test
+	void pdfReportIsArchivedOnceGenerated(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(1, 0, 0, 0)));
+		reportReplies.add(202);
+		reportReplies.add(200);
+		Sec1MobileScanStep s = step();
+		s.setArchiveReport(true);
+		s.setThreshold(new Threshold("0", "", "", "", "fail"));
+		FreeStyleBuild b = j.buildAndAssertStatus(Result.FAILURE, project(j, s, "app/build/a.apk"));
+		assertEquals(2, reportPaths.size());
+		assertEquals("/api/v1/scans/" + SCAN_ID + "/reports/executive", reportPaths.get(0));
+		j.assertLogContains("Report Archived        sec1-mobile-report.pdf", b);
+		byte[] archived = b.getArtifactManager().root().child("sec1-mobile-report.pdf").open().readAllBytes();
+		assertEquals(new String(PDF, StandardCharsets.ISO_8859_1), new String(archived, StandardCharsets.ISO_8859_1));
+	}
+
+	@Test
+	void pdfReportFallsBackToTheControlPlaneWhenNodesDoNotServeIt(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		reportReplies.add(404);
+		Sec1MobileScanStep.reportFallbackBase = baseUrl + "/control-plane";
+		Sec1MobileScanStep s = step();
+		s.setArchiveReport(true);
+		FreeStyleBuild b = j.buildAndAssertSuccess(project(j, s, "app/build/a.apk"));
+		assertEquals(2, reportPaths.size());
+		assertTrue(reportPaths.get(1).startsWith("/control-plane/"));
+		j.assertLogContains("Report Archived", b);
+	}
+
+	@Test
+	void pdfReportFailuresOnlyWarn(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		reportReplies.add(500);
+		Sec1MobileScanStep s = step();
+		s.setArchiveReport(true);
+		FreeStyleBuild b = j.buildAndAssertSuccess(project(j, s, "app/build/a.apk"));
+		j.assertLogContains("WARNING: PDF report not archived: Report download failed: HTTP 500 report_error", b);
+		j.assertLogContains("The build result is not affected", b);
+		assertNull(b.getArtifactManager().root().child("sec1-mobile-report.pdf").isFile() ? "" : null);
+	}
+
+	@Test
+	void anAnswerThatIsNotAPdfIsNotArchived(JenkinsRule j) throws Exception {
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		reportReplies.add(299);
+		Sec1MobileScanStep s = step();
+		s.setArchiveReport(true);
+		FreeStyleBuild b = j.buildAndAssertSuccess(project(j, s, "app/build/a.apk"));
+		j.assertLogContains("the server did not return a PDF", b);
+		assertFalse(b.getArtifactManager().root().child("sec1-mobile-report.pdf").isFile());
+	}
+
 	@Test
 	void configRoundTripKeepsThresholdAndUnsetFields(JenkinsRule j) throws Exception {
 		Sec1MobileScanStep s = new Sec1MobileScanStep("SEC1_API_KEY", "app/*.apk");
 		s.setThreshold(new Threshold("0", "5", "", "", "unstable"));
 		s.setEnvironment("prod");
+		s.setArtifactUrl(ARTIFACT_URL);
+		s.setArtifactSha256(SHA);
 		FreeStyleProject p = j.createFreeStyleProject();
 		p.getBuildersList().add(s);
 		p = j.configRoundtrip(p);
 		Sec1MobileScanStep after = p.getBuildersList().get(Sec1MobileScanStep.class);
 		assertEquals("app/*.apk", after.getBinaryPath());
+		assertEquals(ARTIFACT_URL, after.getArtifactUrl());
+		assertTrue(after.isResubmitPartial());
+		assertFalse(after.isArchiveReport());
+		assertEquals(SHA, after.getArtifactSha256());
 		assertNotNull(after.getThreshold());
 		assertEquals("0", after.getThreshold().getCriticalThreshold());
 		assertEquals("5", after.getThreshold().getHighThreshold());
@@ -357,5 +630,6 @@ class Sec1MobileScanStepTest {
 		q.getBuildersList().add(none);
 		q = j.configRoundtrip(q);
 		assertNull(q.getBuildersList().get(Sec1MobileScanStep.class).getThreshold());
+		assertNull(q.getBuildersList().get(Sec1MobileScanStep.class).getArtifactUrl());
 	}
 }
