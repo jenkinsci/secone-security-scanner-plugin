@@ -1,0 +1,10 @@
+<div>
+    Sec1 Mobile Security API that receives the binary.
+    <ul>
+        <li><b>Hybrid</b> (scanner nodes in your network): your load balancer, e.g. <code>https://scanner.example.com/ai-sast-mobile</code>. The binary goes to a scanner node inside your network, never to the Sec1 control plane.</li>
+        <li><b>Sec1 SaaS</b>: leave empty.</li>
+    </ul>
+    When empty, the <code>SEC1_MOBILE_BASE_URL</code> environment variable is used, e.g. set once under
+    <i>Manage Jenkins &rarr; System &rarr; Global properties</i>. It is separate from <code>SEC1_INSTANCE_URL</code>,
+    which only applies to the SCA/SAST steps. The build log shows which value was used.
+</div>

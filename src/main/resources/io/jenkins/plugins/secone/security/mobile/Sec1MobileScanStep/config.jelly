@@ -1,0 +1,100 @@
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:f="/lib/form">
+    <f:entry title="Credentials Id" field="apiCredentialsId">
+        <f:textbox default="SEC1_API_KEY"/>
+    </f:entry>
+    <f:entry title="Binary Path" field="binaryPath">
+        <f:textbox/>
+    </f:entry>
+    <f:entry title="Artifactory URL" field="artifactUrl">
+        <f:textbox/>
+    </f:entry>
+    <f:entry title="Artifact SHA-256" field="artifactSha256">
+        <f:textbox/>
+    </f:entry>
+    <f:entry title="App Name" field="appName">
+        <f:textbox/>
+    </f:entry>
+    <f:entry title="App Version" field="appVersion">
+        <f:textbox/>
+    </f:entry>
+    <f:entry title="Environment" field="environment">
+        <f:textbox/>
+    </f:entry>
+    <f:entry title="Scan Type" field="scanType">
+        <f:select default="owasp"/>
+    </f:entry>
+    <f:optionalBlock title="${%thresholdTitle}" field="threshold" checked="${instance.threshold != null}">
+        <f:block>
+            <table style="padding-left:2%; width:100%;">
+                <tr>
+                    <td>
+                        <f:entry title="${%criticalThresholdTitle}" field="criticalThreshold">
+                            <f:textbox default="0" value="${instance.threshold.criticalThreshold}"/>
+                        </f:entry>
+                    </td>
+                    <td>
+                        <f:entry title="${%highThresholdTitle}" field="highThreshold">
+                            <f:textbox default="10" value="${instance.threshold.highThreshold}"/>
+                        </f:entry>
+                    </td>
+                    <td>
+                        <f:entry title="${%mediumThresholdTitle}" field="mediumThreshold">
+                            <f:textbox default="" value="${instance.threshold.mediumThreshold}"/>
+                        </f:entry>
+                    </td>
+                    <td>
+                        <f:entry title="${%lowThresholdTitle}" field="lowThreshold">
+                            <f:textbox default="" value="${instance.threshold.lowThreshold}"/>
+                        </f:entry>
+                    </td>
+                </tr>
+                <tr>
+                	<td colspan="4">
+                		On threshold breached, mark the <b>Build Status</b> as
+                	</td>
+                </tr>
+                <tr>
+                	<td>
+                		<f:radio name="statusAction" field="statusAction" title="Fail" checked="${instance.threshold.statusAction == 'fail' || !instance.threshold.statusAction}" value="fail"/>
+                	</td>
+                 	<td>
+                 		<f:radio name="statusAction" field="statusAction" title="Unstable" checked="${instance.threshold.statusAction == 'unstable'}" value="unstable"/>
+                	</td>
+                	<td>
+                		<f:radio name="statusAction" field="statusAction" title="Continue" checked="${instance.threshold.statusAction == 'continue'}" value="continue"/>
+                	</td>
+                </tr>
+            </table>
+        </f:block>
+    </f:optionalBlock>
+    <f:entry title="Minimum Score" field="minScore">
+        <f:number clazz="non-negative-number" min="0" max="100"/>
+    </f:entry>
+    <f:advanced>
+        <f:entry title="Base URL" field="baseUrl">
+            <f:textbox/>
+        </f:entry>
+        <f:entry title="Source" field="source">
+            <f:textbox/>
+        </f:entry>
+        <f:entry title="Engagement Id" field="engagementId">
+            <f:textbox/>
+        </f:entry>
+        <f:entry title="Poll Interval (seconds)" field="pollIntervalSeconds">
+            <f:number default="20" min="10"/>
+        </f:entry>
+        <f:entry title="Timeout (minutes)" field="timeoutMinutes">
+            <f:number default="45" min="1"/>
+        </f:entry>
+        <f:entry title="Resubmit once if the scan is interrupted" field="resubmitPartial">
+            <f:checkbox default="true"/>
+        </f:entry>
+        <f:entry title="Archive findings as a build artifact" field="archiveFindings">
+            <f:checkbox default="true"/>
+        </f:entry>
+        <f:entry title="Archive the PDF report as a build artifact" field="archiveReport">
+            <f:checkbox/>
+        </f:entry>
+    </f:advanced>
+</j:jelly>

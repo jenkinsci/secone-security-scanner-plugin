@@ -32,6 +32,9 @@
             <f:checkbox checked="${instance.sastIncrementalScan}"/>
         </f:entry>
     </f:optionalBlock>
+    <f:entry title="Archive PDF Reports" field="archiveReport">
+        <f:checkbox checked="${instance.archiveReport}"/>
+    </f:entry>
     <f:entry title="Async Scan (fire-and-forget)" field="asyncScan">
     	<f:checkbox checked="${instance.asyncScan}"/>
 	</f:entry>

@@ -1,0 +1,5 @@
+<div>
+    Path to the app binary to scan, relative to the workspace: <code>.apk</code>, <code>.aab</code>, <code>.ipa</code> (also <code>.xapk</code>/split bundles). Wildcards are allowed but must match exactly one file, e.g. <code>app/build/outputs/apk/release/*.apk</code>.
+    <p>
+    Required unless <b>Artifactory URL</b> is set. When both are set, the binary is not uploaded; its SHA-256 is sent as the <b>Artifact SHA-256</b> so the scan is tied to the exact file this build produced.
+</div>

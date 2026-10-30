@@ -1,0 +1,10 @@
+<div>
+    Download URL of the binary your publish step put in JFrog Artifactory, e.g.
+    <code>https://artifactory.example.com/artifactory/mobile-releases/my-app/42/app-release.apk</code>.
+    Environment variables are expanded, e.g. <code>${ARTIFACT_URL}</code>.
+    <p>
+    When set, the binary is not uploaded: the scanner node downloads it from Artifactory with the
+    credential configured on the node, so Jenkins needs no Artifactory credential for this step. The
+    URL must be under the Artifactory base and repository configured on the node, end in
+    <code>.apk</code>, <code>.aab</code>, <code>.xapk</code> or <code>.ipa</code>, and contain no credentials.
+</div>

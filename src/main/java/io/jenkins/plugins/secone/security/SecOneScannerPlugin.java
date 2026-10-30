@@ -86,6 +86,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private static final String SAST_STATUS_CHECK_URL = "/sast/asset/report/status";
 
+	private static final String SAST_REPORT_API = "/sast/report/generate";
+
+	static final String SAST_REPORT_FILE = "sec1-sast-report.pdf";
+
+	static final String SCA_REPORT_FILE = "sec1-sca-report.pdf";
+
+	private static final java.util.regex.Pattern REPORT_URL_ID =
+			java.util.regex.Pattern.compile("([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/?$");
+
 	private static final String API_KEY = "SEC1_API_KEY";
 
 	private static final String API_KEY_HEADER = "sec1-api-key";
@@ -123,11 +132,14 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private String sastInstallation;
 
+	private boolean archiveReport;
+
 	private boolean printInAnsiColor;
 
 	private transient FilePath workspaceForCli;
 	private transient Launcher launcherForCli;
 	private transient EnvVars envForCli;
+	private transient Run<?, ?> runForReport;
 
 	private ObjectFactory objectFactory;
 
@@ -266,6 +278,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	@DataBoundSetter
 	public void setAsyncScan(boolean asyncScan) {
 		this.asyncScan = asyncScan;
+	}
+
+	public boolean isArchiveReport() {
+		return archiveReport;
+	}
+
+	@DataBoundSetter
+	public void setArchiveReport(boolean archiveReport) {
+		this.archiveReport = archiveReport;
 	}
 
 	public boolean isSastIncrementalScan() {
@@ -459,6 +480,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private int performScan(Run<?, ?> run, TaskListener listener, boolean applyThreshold, String workingDirectory)
 			throws AbortException {
+		this.runForReport = run;
 
 		String sec1ApiKey = getApiKey(run, listener);
 
@@ -681,7 +703,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		listener.getLogger().println("Report Id              " + reportId);
 
 		int result = pollSastStatusAndApplyThreshold(
-				reportId, fossInstanceUrl + SAST_STATUS_CHECK_URL, dashboardUrl, sec1ApiKey, listener);
+				reportId, fossInstanceUrl + API_CONTEXT + SAST_STATUS_CHECK_URL, dashboardUrl, sec1ApiKey, listener);
 		printSastEndMessage(listener);
 		return result;
 	}
@@ -749,7 +771,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		ScanTriggerResponse triggerResponse = triggerSastScan(scanUrl, inputParamsMap, sec1ApiKey);
 		if (triggerResponse != null && triggerResponse.statusCode == 200) {
-			String sastStatusCheckUrl = fossInstanceUrl + SAST_STATUS_CHECK_URL;
+			String sastStatusCheckUrl = fossInstanceUrl + API_CONTEXT + SAST_STATUS_CHECK_URL;
 			try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(sastStatusCheckUrl))) {
 				if (StringUtils.isNotBlank(triggerResponse.body)) {
 					JSONArray responseJsonArray = new JSONArray(triggerResponse.body);
@@ -840,6 +862,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 							listener.getLogger().println("Vulnerabilities        Critical: " + critical
 									+ ", High: " + high + ", Medium: " + medium + ", Low: " + low);
 							listener.getLogger().println("Report Url             " + reportUrl);
+							archiveSastReport(fossInstanceUrl.toString(), reportId, sec1ApiKey, listener);
 
 							if (applyThreshold) {
 								if (critical != 0 && threshold.getCriticalThreshold() != null
@@ -888,12 +911,87 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
 			}
 		} else {
-			logger.error("Issue while getting response from system.");
-			throw new AbortException(getErrorMessageInAnsi("Error while processing scan result. Failing the build."));
+			logger.error("SAST scan submission failed: {}", triggerFailure(triggerResponse, scanUrl));
+			throw new AbortException(getErrorMessageInAnsi(
+					"SAST scan submission failed: " + triggerFailure(triggerResponse, scanUrl) + " Failing the build."));
 		}
 
 		printSastEndMessage(listener);
 		return result;
+	}
+
+	/**
+	 * Downloads the SAST PDF report and archives it with the build when
+	 * archiveReport is set. The server generates it on request.
+	 */
+	private void archiveSastReport(String fossInstanceUrl, String reportId, String sec1ApiKey, TaskListener listener) {
+		JSONObject payload = new JSONObject();
+		payload.put("reportId", reportId);
+		payload.put("reportType", "comprehensive");
+		archiveReportPdf("SAST", fossInstanceUrl + API_CONTEXT + SAST_REPORT_API, payload.toString(), SAST_REPORT_FILE,
+				sec1ApiKey, listener);
+	}
+
+	/** Same for the SCA Security Assessment PDF. */
+	private void archiveScaReport(String fossInstanceUrl, String reportId, String sec1ApiKey, TaskListener listener) {
+		if (archiveReport && StringUtils.isBlank(reportId)) {
+			listener.getLogger().println("WARNING: SCA PDF report not archived: no report id. The build result is not affected.");
+			return;
+		}
+		archiveReportPdf("SCA", fossInstanceUrl + API_CONTEXT + "/foss/report/" + reportId
+				+ "/pdf?type=sca-security-assessment", "", SCA_REPORT_FILE, sec1ApiKey, listener);
+	}
+
+	/** The report id at the end of a dashboard report URL, or null. */
+	static String reportIdFromUrl(String reportUrl) {
+		java.util.regex.Matcher m = REPORT_URL_ID.matcher(StringUtils.defaultString(reportUrl).trim());
+		return m.find() ? m.group(1) : null;
+	}
+
+	/** Failures only warn: they never change the build result. */
+	private void archiveReportPdf(String scan, String reportUrl, String jsonBody, String fileName, String sec1ApiKey,
+			TaskListener listener) {
+		if (!archiveReport) {
+			return;
+		}
+		if (runForReport == null || workspaceForCli == null || launcherForCli == null) {
+			listener.getLogger().println("WARNING: " + scan + " PDF report not archived: no workspace. The build result is not affected.");
+			return;
+		}
+		listener.getLogger().println("Downloading " + scan + " PDF report...");
+		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(reportUrl))) {
+			HttpPost post = objectFactory.createHttpPost(reportUrl);
+			post.setHeader(API_KEY_HEADER, sec1ApiKey);
+			post.setHeader("Content-Type", "application/json");
+			post.setHeader("Accept", "application/pdf");
+			post.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8));
+			try (CloseableHttpResponse response = client.execute(post)) {
+				int status = response.getStatusLine().getStatusCode();
+				byte[] body = response.getEntity() != null ? EntityUtils.toByteArray(response.getEntity()) : new byte[0];
+				if (status != 200) {
+					listener.getLogger().println("WARNING: " + scan + " PDF report not archived: HTTP " + status + " "
+							+ StringUtils.abbreviate(new String(body, StandardCharsets.UTF_8).trim(), 200)
+							+ ". The build result is not affected.");
+					return;
+				}
+				if (body.length < 5 || !new String(body, 0, 5, StandardCharsets.ISO_8859_1).equals("%PDF-")) {
+					listener.getLogger().println("WARNING: " + scan + " PDF report not archived: the server did not return a PDF."
+							+ " The build result is not affected.");
+					return;
+				}
+				workspaceForCli.child(fileName).copyFrom(new java.io.ByteArrayInputStream(body));
+				runForReport.pickArtifactManager().archive(workspaceForCli, launcherForCli,
+						jenkins.util.BuildListenerAdapter.wrap(listener), Collections.singletonMap(fileName, fileName));
+				listener.getLogger().println("Report Archived        " + fileName + " (" + (body.length / 1024) + " KB)");
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			listener.getLogger().println("WARNING: " + scan + " PDF report not archived: interrupted.");
+		} catch (IOException | URISyntaxException | RuntimeException e) {
+			logger.error(scan + " PDF report download failed", e);
+			listener.getLogger().println("WARNING: " + scan + " PDF report not archived (" + e.getClass().getSimpleName()
+					+ (e.getMessage() != null ? ": " + e.getMessage() : "") + "). The build result is not affected.");
+		}
 	}
 
 	private String getSanitizedBranchName(String branchName) {
@@ -973,6 +1071,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				listener.getLogger().println("Vulnerabilities        Critical: " + critical
 						+ ", High: " + high + ", Medium: " + medium + ", Low: " + low);
 				listener.getLogger().println("Report Url             " + reportUrl);
+				archiveSastReport(StringUtils.substringBefore(sastStatusCheckUrl, API_CONTEXT + SAST_STATUS_CHECK_URL),
+						reportId, sec1ApiKey, listener);
 
 				if (applyThreshold && threshold != null) {
 					if (critical != 0 && threshold.getCriticalThreshold() != null
@@ -1120,7 +1220,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		ScanTriggerResponse triggerResponse = triggerScaScan(scanUrl, rquestJson.toString(), sec1ApiKey);
 		if (triggerResponse != null && triggerResponse.statusCode == 200) {
-			String scaStatusCheckUrl = fossInstanceUrl + SCA_STATUS_CHECK_URL;
+			String scaStatusCheckUrl = fossInstanceUrl + API_CONTEXT + SCA_STATUS_CHECK_URL;
 			try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(scaStatusCheckUrl))) {
 				if (StringUtils.isNotBlank(triggerResponse.body)) {
 					JSONArray responseJsonArray = new JSONArray(triggerResponse.body);
@@ -1223,6 +1323,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 								listener.getLogger().println("Status                 " + scanResult.optString("overallRagStatus").toUpperCase());
 								listener.getLogger()
 										.println("Report Url             " + scanResult.optString("reportUrl"));
+								archiveScaReport(fossInstanceUrl.toString(), reportId, sec1ApiKey, listener);
 
 								if (applyThreshold) {
 									try {
@@ -1279,12 +1380,9 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
 			}
 		} else {
-			if (triggerResponse != null && triggerResponse.statusCode == 401) {
-				throw new AbortException(getErrorMessageInAnsi("401 Unauthorized. Check your api key."));
-			}
-			logger.error("Issue while getting response from system.");
-			throw new AbortException(
-					getErrorMessageInAnsi("Error while processing sca scan result. Failing the build."));
+			logger.error("SCA scan submission failed: {}", triggerFailure(triggerResponse, scanUrl));
+			throw new AbortException(getErrorMessageInAnsi(
+					"SCA scan submission failed: " + triggerFailure(triggerResponse, scanUrl) + " Failing the build."));
 		}
 		printScaEndMessage(listener);
 		return result;
@@ -1446,6 +1544,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				listener.getLogger().println("Vulnerabilities        Critical: " + critical + ", High: " + high
 						+ ", Medium: " + medium + ", Low: " + low);
 				listener.getLogger().println("Report Url             " + responseJson.optString("reportUrl"));
+				archiveScaReport(fossInstanceUrl.toString(), StringUtils.defaultIfBlank(responseJson.optString("reportId"),
+						reportIdFromUrl(responseJson.optString("reportUrl"))), sec1ApiKey, listener);
 
 				result = applyScaThresholdChecks(critical, high, medium, low, listener);
 			}
@@ -1650,6 +1750,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			int high = NumberUtils.toInt(props.getProperty("high"), 0);
 			int medium = NumberUtils.toInt(props.getProperty("medium"), 0);
 			int low = NumberUtils.toInt(props.getProperty("low"), 0);
+			archiveScaReport(fossInstanceUrl.toString(), reportIdFromUrl(props.getProperty("reportUrl")),
+					sec1ApiKey, listener);
 
 			result = applyScaThresholdChecks(critical, high, medium, low, listener);
 		} catch (AbortException ex) {
@@ -1687,7 +1789,20 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		return 0;
 	}
 
-	private static final class ScanTriggerResponse {
+	/** Why a scan submission was not accepted, for the build log. */
+	static String triggerFailure(ScanTriggerResponse response, String scanUrl) {
+		if (response == null) {
+			return "could not reach the Sec1 API at " + scanUrl + ". Check SEC1_INSTANCE_URL and the network.";
+		}
+		String detail = StringUtils.abbreviate(StringUtils.normalizeSpace(StringUtils.defaultString(response.body)), 300);
+		if (response.statusCode == 401 || response.statusCode == 403) {
+			return "HTTP " + response.statusCode + ", the Sec1 API key was rejected. Check that the credential holds a"
+					+ " current API key." + (detail.isEmpty() ? "" : " Response: " + detail);
+		}
+		return "HTTP " + response.statusCode + (detail.isEmpty() ? "." : ": " + detail);
+	}
+
+	static final class ScanTriggerResponse {
 		final int statusCode;
 		final String body;
 

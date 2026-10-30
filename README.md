@@ -32,6 +32,14 @@ It is possible to configure custom endpoints by setting environment variables:
 - Click "Add"
 - Set `SEC1_INSTANCE_URL` to override the API endpoint
 - Set `SEC1_DASHBOARD_URL` to override the dashboard endpoint (used for report URLs in build output)
+- Set `SEC1_MOBILE_BASE_URL` to point `sec1MobileScan` at your Mobile Security scanner nodes. It is separate from `SEC1_INSTANCE_URL` and never derived from it:
+
+  | Deployment | `SEC1_MOBILE_BASE_URL` | Who receives the binary |
+  |---|---|---|
+  | Hybrid (scanner nodes in your network) | `https://<your-load-balancer>/ai-sast-mobile` | a scanner node inside your network |
+  | Sec1 SaaS, no on-prem nodes | leave unset (Sec1 SaaS) | the Sec1 control plane |
+
+  A `baseUrl` set on the step takes precedence. The build log shows which one was used, e.g. `Base URL  https://lb.example.com/ai-sast-mobile (SEC1_MOBILE_BASE_URL)`.
 
 
 ## 2. Configure a Sec1 API Token Credential
@@ -105,6 +113,7 @@ pipeline {
             runSca: true,
             runSast: true,
             sastIncrementalScan: false,
+            archiveReport: true,
             asyncScan: false,
             scanTag: 'my-scan-tag',
             applyThreshold: true,
@@ -161,6 +170,17 @@ Workspace-relative path to an SBOM file (JSON) your build already generates. Whe
 #### `sastIncrementalScan` (optional, default: `false`)
 
 Run the SAST scan in incremental mode. Only changed code is analyzed, which is faster for large repositories. Requires a baseline full scan to exist on the Sec1 server.
+
+#### `archiveReport` (optional, default: `false`)
+
+Download the PDF report of each scan that ran and archive it with the build, so it opens from **Build Artifacts** on the build page:
+
+| Scan | File | Report |
+|---|---|---|
+| SCA | `sec1-sca-report.pdf` | SCA Security Assessment |
+| SAST | `sec1-sast-report.pdf` | Comprehensive |
+
+Reports are generated on request, which adds a few seconds per scan. They are archived before the threshold is checked, so a build that breaches the threshold still has its reports. If a download fails, the log shows a warning and the build result is not affected. Works in API, SBOM and CLI mode. Not used with `asyncScan` fire-and-forget, since the step does not wait for the scan.
 
 #### `asyncScan` (optional, default: `false`)
 
@@ -288,6 +308,189 @@ pipeline {
 ### Older parameters
 
 Configurations written for earlier releases keep working: `sastMode: 'cli'` with `sastInstallation`, and `scaMode: 'sbom'` with `scaInstallation`. They set each scan separately and need separate tool installations; prefer `scanMode` with a single `cliInstallation` for new jobs.
+
+## Mobile app scanning (`sec1MobileScan`)
+
+Scans a built mobile app binary (`.apk`, `.aab`, `.ipa`, also `.xapk` and split bundles) with Sec1 Mobile Security. It is a separate step from `sec1Security` because it runs on the build output rather than the source, so place it after the stage that produces the binary. It uses the same Sec1 API key credential (the account needs the Mobile Security plan).
+
+```groovy
+stage('Build APK') {
+  steps { sh './gradlew assembleRelease' }
+}
+stage('Sec1 Mobile Scan') {
+  steps {
+    sec1MobileScan(
+      apiCredentialsId: '<Your Sec1 Api Key ID>',
+      binaryPath: 'app/build/outputs/apk/release/*.apk',
+      appName: 'my-app',
+      environment: 'uat'
+    )
+  }
+}
+```
+
+The step uploads the binary from the agent (or, with `artifactUrl`, has the scanner node fetch it from Artifactory), waits for the scan to finish (typically 5–20 minutes) while printing its progress, prints a link to the results in the Sec1 console, archives the findings as `sec1-mobile-findings.json`, and applies the vulnerability threshold if one is configured. If the build is aborted, the scan is cancelled.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `apiCredentialsId` | `SEC1_API_KEY` | Secret text credential holding the Sec1 API key |
+| `binaryPath` | *required without `artifactUrl`* | Workspace-relative path to the binary; wildcards allowed, must match exactly one file |
+| `artifactUrl` | — | Artifactory download URL of the binary; the scanner node fetches it instead of an upload (see below) |
+| `artifactSha256` | computed from `binaryPath` when set | SHA-256 of the binary at `artifactUrl`; a mismatch with Artifactory's checksum is refused |
+| `appName` | binary or artifact file name | Application name shown in the console |
+| `appVersion` | build number | Version recorded with the scan |
+| `environment` | — | Free-text label, e.g. `uat`, `prod` |
+| `scanType` | `owasp` | `owasp`, `quick`, `compliance` or `deep`; a label recorded on the scan, the same analysis runs for all |
+| `applyThreshold` | on when `threshold` is set | Set `false` to keep a configured `threshold` without applying it |
+| `threshold` | *none* | Per-severity thresholds, e.g. `[criticalThreshold: '0', highThreshold: '5']` |
+| `actionOnThresholdBreached` | `fail` | `fail`, `unstable` or `continue` when a threshold is breached |
+| `minScore` | *none* | Breach when the aggregate score is below this value |
+| `baseUrl` | Sec1 SaaS | For on-premises scanner nodes: your load balancer URL, e.g. `https://scanner.example.com/ai-sast-mobile` (or set `SEC1_MOBILE_BASE_URL`) |
+| `pollIntervalSeconds` | `20` | How often to check progress (minimum 10) |
+| `timeoutMinutes` | `45` | Total time the step waits, a resubmission included; when it runs out the build fails and the scan keeps running in the console |
+| `resubmitPartial` | `true` | Resubmit once when a scan is interrupted (`partial`); never after a timeout such as `stale_scan_timeout` |
+| `archiveFindings` | `true` | Archive `sec1-mobile-findings.json` with the build |
+| `archiveReport` | `false` | Download the executive PDF report and archive it as `sec1-mobile-report.pdf` (see below) |
+| `source`, `engagementId` | `jenkins:JOB#BUILD`, — | Provenance label and engagement grouping |
+
+### Scanning a build from JFrog Artifactory
+
+If the build already publishes the package to Artifactory, pass its download URL instead of uploading it again. The scanner node downloads the file itself, using the Artifactory credential configured on the node, so Jenkins needs no Artifactory plugin or credential for this step. This requires the one-time Artifactory setup on the scanner node (described in *Sec1 Mobile Security — Scanning builds straight from JFrog Artifactory*, available from Sec1); the node's `/health` then reports `"artifactory":"ok"`.
+
+#### Passing the URL from your publish step
+
+Whatever publishes the build to Artifactory knows the file's download URL, and usually its SHA-256. Capture both in the publish stage and hand them to `sec1MobileScan`. The examples assume `SEC1_MOBILE_BASE_URL` points at your scanner nodes (see [Custom Endpoints](#custom-endpoints)); otherwise add `baseUrl` to the step. They read JSON with `readJSON` from the [Pipeline Utility Steps](https://plugins.jenkins.io/pipeline-utility-steps/) plugin.
+
+**JFrog CLI (`jf rt upload`).** `--detailed-summary` prints the target URL and SHA-256 of each uploaded file:
+
+```groovy
+stage('Publish APK') {
+  steps {
+    script {
+      def out = sh(returnStdout: true, script: '''
+        jf rt upload --detailed-summary "app/build/outputs/apk/release/app-release.apk" \
+          "mobile-releases/my-app/${BUILD_NUMBER}/"
+      ''')
+      def file = readJSON(text: out).files[0]
+      env.ARTIFACT_URL = file.target      // https://artifactory.example.com/artifactory/mobile-releases/my-app/42/app-release.apk
+      env.ARTIFACT_SHA256 = file.sha256
+    }
+  }
+}
+stage('Sec1 Mobile Scan') {
+  steps {
+    sec1MobileScan(
+      apiCredentialsId: 'SEC1_API_KEY',
+      artifactUrl: env.ARTIFACT_URL,
+      artifactSha256: env.ARTIFACT_SHA256,
+      appName: 'my-app',
+      environment: 'uat'
+    )
+  }
+}
+```
+
+The same works with the Jenkins JFrog plugin's `jf` step, which runs the same CLI.
+
+**Artifactory REST API (`curl -T`).** The deploy response contains `downloadUri` and `checksums.sha256`:
+
+```groovy
+stage('Publish APK') {
+  steps {
+    withCredentials([usernamePassword(credentialsId: 'artifactory-deployer',
+                                      usernameVariable: 'ART_USER', passwordVariable: 'ART_PASS')]) {
+      script {
+        // Single quotes: the shell, not Groovy, expands the credentials, so they stay masked.
+        def out = sh(returnStdout: true, script: '''
+          curl -sSf -u "$ART_USER:$ART_PASS" \
+            -T app/build/outputs/apk/release/app-release.apk \
+            "https://artifactory.example.com/artifactory/mobile-releases/my-app/${BUILD_NUMBER}/app-release.apk"
+        ''')
+        def deployed = readJSON(text: out)
+        env.ARTIFACT_URL = deployed.downloadUri
+        env.ARTIFACT_SHA256 = deployed.checksums.sha256
+      }
+    }
+  }
+}
+```
+
+Follow it with the same `Sec1 Mobile Scan` stage as above.
+
+**Gradle or Maven publishing.** These do not print the URL, but it follows from the repository layout, so build it from the same values the publish task uses. Pass `binaryPath` so the step computes the SHA-256 from the file it just built:
+
+```groovy
+stage('Publish APK') {
+  steps {
+    sh './gradlew publish'   // publishes to mobile-releases as com/example/my-app/<version>/my-app-<version>.apk
+  }
+}
+stage('Sec1 Mobile Scan') {
+  steps {
+    script {
+      def version = "1.4.${env.BUILD_NUMBER}"
+      sec1MobileScan(
+        apiCredentialsId: 'SEC1_API_KEY',
+        artifactUrl: "https://artifactory.example.com/artifactory/mobile-releases/com/example/my-app/${version}/my-app-${version}.apk",
+        binaryPath: 'app/build/outputs/apk/release/*.apk',   // only for the checksum; not uploaded
+        appName: 'my-app',
+        appVersion: version
+      )
+    }
+  }
+}
+```
+
+Jenkins only needs Artifactory credentials for the publish step. The scan step never contacts Artifactory: the scanner node downloads the file with its own read credential, so the URL must be in a repository the node is configured for.
+
+#### Rules
+
+- `artifactUrl` must be under the Artifactory base and repository configured on the node, end in `.apk`, `.aab`, `.xapk` or `.ipa`, and contain no credentials.
+- With `artifactUrl` set, `binaryPath` is never uploaded. If it is set and `artifactSha256` is not, the step sends the workspace file's SHA-256, which ties the scan to the exact binary this build produced. Without either, the node still verifies the download against Artifactory's own checksum.
+- The download is the scan's first phase (`fetching_artifact`). If Artifactory cannot be reached at submission (HTTP 502 `artifactory_unreachable`), the submission is retried, since a failed submission never creates a scan. Configuration errors (`artifact_url_not_allowed`, `artifactory_auth_failed`, `artifact_not_found`, `artifact_checksum_mismatch`) fail the build with a hint.
+
+### Vulnerability threshold
+
+The threshold works the same way as in `sec1Security`. **By default no threshold is applied:** findings are reported, archived and linked in the console, but they do not change the build result.
+
+When a threshold is set, a severity breaches when its count is non-zero and greater than or equal to the configured value, so `criticalThreshold: '0'` fails on the first critical finding and `highThreshold: '5'` passes with 4 High findings and breaches with 5. A blank severity is not checked. `minScore` breaches when the aggregate score is below the value. On a breach, the reasons are printed in the console and the build is set according to `actionOnThresholdBreached`.
+
+```groovy
+sec1MobileScan(
+  apiCredentialsId: '<Your Sec1 Api Key ID>',
+  binaryPath: 'app/build/outputs/apk/release/*.apk',
+  applyThreshold: true,
+  actionOnThresholdBreached: 'unstable',
+  threshold: [criticalThreshold: '0', highThreshold: '5'],
+  minScore: 40
+)
+```
+
+In freestyle jobs the same options are under **Apply Threshold** in the step configuration, and the **Pipeline Syntax** snippet generator produces the matching `sec1MobileScan` line.
+
+A scan that is interrupted on the server side (`partial`, e.g. the scanner node restarted) is resubmitted once automatically, unless `resubmitPartial: false`. It is not resubmitted when the reason is a timeout (`stale_scan_timeout`): the scanner node stopped the scan at its own per-scan time limit, and a new scan would stop at the same point, so the build fails with that reason. If an app regularly needs longer, ask the node operator to raise the node's limit. A failed scan fails the build with the reason from the server; threshold options do not apply to it.
+
+### PDF report
+
+Set `archiveReport: true` to keep the executive PDF report with each build. After a completed scan, the step requests the report, waits while it is generated (up to 10 minutes), and archives it as `sec1-mobile-report.pdf` next to the findings, so it opens from the build page. This happens before the threshold is checked, so a build that breaches the threshold still has its report.
+
+```groovy
+sec1MobileScan(apiCredentialsId: 'SEC1_API_KEY', artifactUrl: env.ARTIFACT_URL, archiveReport: true)
+```
+
+The report is requested from the base URL first. If the scanner nodes do not serve it, it is fetched from the Sec1 control plane, so in a hybrid setup the agent then needs to reach Sec1. If the report cannot be downloaded, the log shows a warning and the build result is not affected.
+
+### Timeouts
+
+`timeoutMinutes` is the total time the step waits, including a resubmission. If you also wrap the stage in a Pipeline `timeout`, make that a few minutes longer, so the step reports its own timeout first:
+
+```groovy
+timeout(time: 100, unit: 'MINUTES') {
+  sec1MobileScan(apiCredentialsId: 'SEC1_API_KEY', artifactUrl: env.ARTIFACT_URL, timeoutMinutes: 90)
+}
+```
+
+When `timeoutMinutes` runs out, the build fails but the scan keeps running, and its result appears in the Sec1 console. When the build is aborted, including by a Pipeline `timeout`, the step cancels the scan on the scanner node.
 
 ## Troubleshooting
 
