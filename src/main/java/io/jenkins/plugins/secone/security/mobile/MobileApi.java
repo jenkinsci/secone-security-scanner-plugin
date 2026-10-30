@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import hudson.remoting.VirtualChannel;
+import hudson.util.Secret;
 import jenkins.MasterToSlaveFileCallable;
 import jenkins.security.MasterToSlaveCallable;
 
@@ -59,13 +60,13 @@ final class MobileApi {
 	static final class Submit extends MasterToSlaveFileCallable<Response> {
 		private static final long serialVersionUID = 1L;
 		private final String url;
-		private final String apiKey;
+		private final Secret apiKey;
 		private final String userAgent;
 		private final Map<String, String> fields;
 
 		Submit(String url, String apiKey, String userAgent, Map<String, String> fields) {
 			this.url = url;
-			this.apiKey = apiKey;
+			this.apiKey = Secret.fromString(apiKey);
 			this.userAgent = userAgent;
 			this.fields = fields;
 		}
@@ -102,7 +103,7 @@ final class MobileApi {
 					}), length);
 
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMinutes(30))
-					.header("sec1-api-key", apiKey).header("User-Agent", userAgent)
+					.header("sec1-api-key", apiKey.getPlainText()).header("User-Agent", userAgent)
 					.header("Accept", "application/json")
 					.header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(body).build();
 			HttpResponse<String> response = client().send(request,
@@ -115,13 +116,13 @@ final class MobileApi {
 	static final class PostJson extends MasterToSlaveCallable<Response, IOException> {
 		private static final long serialVersionUID = 1L;
 		private final String url;
-		private final String apiKey;
+		private final Secret apiKey;
 		private final String userAgent;
 		private final String json;
 
 		PostJson(String url, String apiKey, String userAgent, String json) {
 			this.url = url;
-			this.apiKey = apiKey;
+			this.apiKey = Secret.fromString(apiKey);
 			this.userAgent = userAgent;
 			this.json = json;
 		}
@@ -129,7 +130,7 @@ final class MobileApi {
 		@Override
 		public Response call() throws IOException {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(120))
-					.header("sec1-api-key", apiKey).header("User-Agent", userAgent)
+					.header("sec1-api-key", apiKey.getPlainText()).header("User-Agent", userAgent)
 					.header("Accept", "application/json").header("Content-Type", "application/json")
 					.POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8)).build();
 			try {
@@ -152,19 +153,19 @@ final class MobileApi {
 	static final class Download extends MasterToSlaveFileCallable<Response> {
 		private static final long serialVersionUID = 1L;
 		private final String url;
-		private final String apiKey;
+		private final Secret apiKey;
 		private final String userAgent;
 
 		Download(String url, String apiKey, String userAgent) {
 			this.url = url;
-			this.apiKey = apiKey;
+			this.apiKey = Secret.fromString(apiKey);
 			this.userAgent = userAgent;
 		}
 
 		@Override
 		public Response invoke(File target, VirtualChannel channel) throws IOException, InterruptedException {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMinutes(5))
-					.header("sec1-api-key", apiKey).header("User-Agent", userAgent)
+					.header("sec1-api-key", apiKey.getPlainText()).header("User-Agent", userAgent)
 					.header("Accept", "application/pdf").GET().build();
 			HttpResponse<byte[]> response = client().send(request, HttpResponse.BodyHandlers.ofByteArray());
 			byte[] body = response.body();
@@ -216,20 +217,20 @@ final class MobileApi {
 		private static final long serialVersionUID = 1L;
 		private final String method;
 		private final String url;
-		private final String apiKey;
+		private final Secret apiKey;
 		private final String userAgent;
 
 		Call(String method, String url, String apiKey, String userAgent) {
 			this.method = method;
 			this.url = url;
-			this.apiKey = apiKey;
+			this.apiKey = Secret.fromString(apiKey);
 			this.userAgent = userAgent;
 		}
 
 		@Override
 		public Response call() throws IOException {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(60))
-					.header("sec1-api-key", apiKey).header("User-Agent", userAgent)
+					.header("sec1-api-key", apiKey.getPlainText()).header("User-Agent", userAgent)
 					.header("Accept", "application/json").method(method, HttpRequest.BodyPublishers.noBody()).build();
 			try {
 				HttpResponse<String> response = client().send(request,

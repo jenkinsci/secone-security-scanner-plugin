@@ -549,6 +549,22 @@ class Sec1MobileScanStepTest {
 	}
 
 	@Test
+	void scanRunsOnAnAgentWithTheKeySentAsASecret(JenkinsRule j) throws Exception {
+		// The HTTP calls run on the agent, so the callables (holding the key
+		// as a Secret) are serialized over the remoting channel here.
+		polls.add(record("completed", sev(0, 0, 0, 0)));
+		reportReplies.add(200);
+		Sec1MobileScanStep s = step();
+		s.setArchiveReport(true);
+		FreeStyleProject p = project(j, s, "app/build/a.apk");
+		p.setAssignedNode(j.createOnlineSlave());
+		FreeStyleBuild b = j.buildAndAssertSuccess(p);
+		j.assertLogContains("Scan Id", b);
+		j.assertLogContains("Report Archived        sec1-mobile-report.pdf", b);
+		assertEquals(1, reportPaths.size());
+	}
+
+	@Test
 	void pdfReportIsArchivedOnceGenerated(JenkinsRule j) throws Exception {
 		polls.add(record("completed", sev(1, 0, 0, 0)));
 		reportReplies.add(202);
