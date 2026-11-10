@@ -35,6 +35,9 @@
     <f:entry title="Archive PDF Reports" field="archiveReport">
         <f:checkbox checked="${instance.archiveReport}"/>
     </f:entry>
+    <f:entry title="Skip SCA Policy" field="skipPolicy">
+        <f:checkbox checked="${instance.skipPolicy}"/>
+    </f:entry>
     <f:entry title="Async Scan (fire-and-forget)" field="asyncScan">
     	<f:checkbox checked="${instance.asyncScan}"/>
 	</f:entry>

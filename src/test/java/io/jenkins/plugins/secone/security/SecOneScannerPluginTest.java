@@ -130,6 +130,9 @@ public class SecOneScannerPluginTest {
 		java.lang.reflect.Field factoryField = SecOneScannerPlugin.class.getDeclaredField("objectFactory");
 		factoryField.setAccessible(true);
 		factoryField.set(plugin, objectFactory);
+		// These tests queue HTTP responses in call order; the SCA policy call would take one of
+		// them. The policy check has its own tests (ScaPolicyEnforcementTest).
+		plugin.setSkipPolicy(true);
 		when(taskListener.getLogger()).thenReturn(mock(PrintStream.class));
 		mockJenkins();
 	}

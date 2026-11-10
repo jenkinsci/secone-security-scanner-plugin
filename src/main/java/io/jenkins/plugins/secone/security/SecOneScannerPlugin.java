@@ -98,6 +98,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	private static final String API_KEY = "SEC1_API_KEY";
 
 	private static final String API_KEY_HEADER = "sec1-api-key";
+	private static final String SCA_POLICY_EVALUATE_URL = "/foss/sca/policy/evaluate";
 
 	private String apiCredentialsId;
 	private boolean applyThreshold;
@@ -133,6 +134,9 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	private String sastInstallation;
 
 	private boolean archiveReport;
+
+	/** Skip the server-side SCA policy check after the scan. */
+	private boolean skipPolicy;
 
 	private boolean printInAnsiColor;
 
@@ -287,6 +291,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	@DataBoundSetter
 	public void setArchiveReport(boolean archiveReport) {
 		this.archiveReport = archiveReport;
+	}
+
+	public boolean isSkipPolicy() {
+		return skipPolicy;
+	}
+
+	@DataBoundSetter
+	public void setSkipPolicy(boolean skipPolicy) {
+		this.skipPolicy = skipPolicy;
 	}
 
 	public boolean isSastIncrementalScan() {
@@ -933,6 +946,87 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	}
 
 	/** Same for the SCA Security Assessment PDF. */
+	/**
+	 * Evaluates the finished SCA report against the organisation's SCA policy (or the
+	 * repository override) on the Sec1 server, logs any violations and applies the
+	 * policy's action: FAIL aborts the build, UNSTABLE returns 2, CONTINUE returns 0.
+	 * A server that cannot evaluate (older server, network error) only warns, so
+	 * builds keep working while servers are upgraded.
+	 */
+	int enforceScaPolicy(String fossInstanceUrl, String reportId, String sec1ApiKey, TaskListener listener)
+			throws AbortException {
+		if (skipPolicy || StringUtils.isBlank(reportId)) {
+			return 0;
+		}
+		String url = fossInstanceUrl + API_CONTEXT + SCA_POLICY_EVALUATE_URL;
+		JSONObject result;
+		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(url))) {
+			HttpPost post = objectFactory.createHttpPost(url);
+			post.setHeader(API_KEY_HEADER, sec1ApiKey);
+			post.setHeader("Content-Type", "application/json");
+			post.setEntity(new StringEntity(new JSONObject().put("reportId", reportId).toString(), StandardCharsets.UTF_8));
+			try (CloseableHttpResponse response = client.execute(post)) {
+				int status = response.getStatusLine().getStatusCode();
+				String body = response.getEntity() != null
+						? EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8) : "";
+				if (status != 200) {
+					listener.getLogger().println("WARNING: SCA policy could not be evaluated (HTTP " + status
+							+ "). The build result is not affected.");
+					return 0;
+				}
+				result = new JSONObject(body);
+			}
+		} catch (IOException | URISyntaxException | RuntimeException e) {
+			logger.error("SCA policy evaluation failed", e);
+			listener.getLogger().println("WARNING: SCA policy could not be evaluated (" + e.getClass().getSimpleName()
+					+ "). The build result is not affected.");
+			return 0;
+		}
+
+		if (!result.optBoolean("policyApplied")) {
+			listener.getLogger().println("Policy                 None configured");
+			return 0;
+		}
+		String source = result.optString("policySource", "organisation");
+		if (!result.optBoolean("breached")) {
+			listener.getLogger().println("Policy                 Passed (" + source + " policy)");
+			return 0;
+		}
+
+		listener.getLogger().println("-------------------- Sec1 SCA Policy Violations --------------------");
+		JSONArray severity = result.optJSONArray("severityViolations");
+		for (int i = 0; severity != null && i < severity.length(); i++) {
+			JSONObject v = severity.getJSONObject(i);
+			listener.getLogger().println("Severity               " + v.optString("severity") + ": " + v.optLong("count")
+					+ " found, policy allows " + v.optLong("max"));
+		}
+		JSONArray licences = result.optJSONArray("licenseViolations");
+		int shown = licences == null ? 0 : Math.min(20, licences.length());
+		for (int i = 0; i < shown; i++) {
+			JSONObject v = licences.getJSONObject(i);
+			JSONArray ids = v.optJSONArray("licenses");
+			listener.getLogger().println("Licence                " + v.optString("purl") + "  "
+					+ (ids == null || ids.length() == 0 ? "unknown" : ids.join(", ").replace("\"", "")) + "  ("
+					+ v.optString("reason") + ")");
+		}
+		int more = result.optInt("licenseViolationTotal", shown) - shown;
+		if (more > 0) {
+			listener.getLogger().println("Licence                ...and " + more + " more; see the report.");
+		}
+
+		String message = "SCA policy breached (" + source + " policy).";
+		String action = result.optString("action", "FAIL");
+		if (StringUtils.equalsIgnoreCase(action, "UNSTABLE")) {
+			printLogs(listener.getLogger(), message, "r");
+			return 2;
+		}
+		if (StringUtils.equalsIgnoreCase(action, "CONTINUE")) {
+			listener.getLogger().println(message);
+			return 0;
+		}
+		throw new AbortException(getErrorMessageInAnsi(message + " Failing the build."));
+	}
+
 	private void archiveScaReport(String fossInstanceUrl, String reportId, String sec1ApiKey, TaskListener listener) {
 		if (archiveReport && StringUtils.isBlank(reportId)) {
 			listener.getLogger().println("WARNING: SCA PDF report not archived: no report id. The build result is not affected.");
@@ -1356,6 +1450,10 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 												"Attention: Build Failed because of vulnerability threshold level breached for sca."));
 									}
 								}
+								int policyResult = enforceScaPolicy(fossInstanceUrl.toString(), reportId, sec1ApiKey, listener);
+								if (policyResult != 0) {
+									result = policyResult;
+								}
 							} else {
 								printLogs(listener.getLogger(),
 										"Error Details : " + scanResult.optString("errorMessage"), "r");
@@ -1548,6 +1646,12 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 						reportIdFromUrl(responseJson.optString("reportUrl"))), sec1ApiKey, listener);
 
 				result = applyScaThresholdChecks(critical, high, medium, low, listener);
+				int policyResult = enforceScaPolicy(fossInstanceUrl.toString(), StringUtils.defaultIfBlank(
+						responseJson.optString("reportId"), reportIdFromUrl(responseJson.optString("reportUrl"))),
+						sec1ApiKey, listener);
+				if (policyResult != 0) {
+					result = policyResult;
+				}
 			}
 		} catch (AbortException ex) {
 			printScaEndMessage(listener);
@@ -1718,6 +1822,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		cliEnv.put("SEC1_API_KEY", sec1ApiKey);
 		cliEnv.put("SEC1_INSTANCE_URL", fossInstanceUrl.toString());
 		cliEnv.put("SEC1_RESULT_FILE", resultFile.getRemote());
+		// The plugin evaluates the SCA policy itself below; an env var, so older CLIs ignore it.
+		cliEnv.put("SEC1_SKIP_POLICY", "true");
 
 		int exitCode;
 		try {
@@ -1754,6 +1860,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 					sec1ApiKey, listener);
 
 			result = applyScaThresholdChecks(critical, high, medium, low, listener);
+			int policyResult = enforceScaPolicy(fossInstanceUrl.toString(), reportIdFromUrl(props.getProperty("reportUrl")),
+					sec1ApiKey, listener);
+			if (policyResult != 0) {
+				result = policyResult;
+			}
 		} catch (AbortException ex) {
 			printScaEndMessage(listener);
 			throw ex;
