@@ -1005,13 +1005,13 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		for (int i = 0; i < shown; i++) {
 			JSONObject v = licences.getJSONObject(i);
 			JSONArray ids = v.optJSONArray("licenses");
-			listener.getLogger().println("Licence                " + v.optString("purl") + "  "
+			listener.getLogger().println("License                " + v.optString("purl") + "  "
 					+ (ids == null || ids.length() == 0 ? "unknown" : ids.join(", ").replace("\"", "")) + "  ("
 					+ v.optString("reason") + ")");
 		}
 		int more = result.optInt("licenseViolationTotal", shown) - shown;
 		if (more > 0) {
-			listener.getLogger().println("Licence                ...and " + more + " more; see the report.");
+			listener.getLogger().println("License                ...and " + more + " more; see the report.");
 		}
 
 		String message = "SCA policy breached (" + source + " policy).";

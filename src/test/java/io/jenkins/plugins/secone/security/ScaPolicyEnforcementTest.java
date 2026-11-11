@@ -67,7 +67,7 @@ class ScaPolicyEnforcementTest {
 		serverReplies(200, "{\"policyApplied\":true,\"breached\":true,\"action\":\"FAIL\",\"policySource\":\"repository\","
 				+ "\"severityViolations\":[{\"severity\":\"CRITICAL\",\"count\":3,\"max\":0}],"
 				+ "\"licenseViolations\":[{\"purl\":\"pkg:npm/x@1\",\"licenses\":[\"AGPL-3.0\"],"
-				+ "\"reason\":\"Licence category denied: NETWORK_COPYLEFT\"}],\"licenseViolationTotal\":1}");
+				+ "\"reason\":\"License category denied: NETWORK_COPYLEFT\"}],\"licenseViolationTotal\":1}");
 		AbortException ex = assertThrows(AbortException.class,
 				() -> plugin.enforceScaPolicy("https://api.sec1.io", "r1", "key", listener));
 		assertTrue(ex.getMessage().contains("SCA policy breached (repository policy)"));
