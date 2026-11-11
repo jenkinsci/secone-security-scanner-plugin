@@ -1,0 +1,9 @@
+<div>
+  After an SCA scan the step checks the result against your organisation's SCA policy (Sec1 dashboard,
+  Settings &gt; Configure &gt; SCA policy): severity limits and denied licences. On a breach the build fails,
+  is marked unstable, or continues, as the policy says. Tick this box to skip the policy check for this job.
+  <p>
+  If no policy is configured the check passes. If the Sec1 server cannot evaluate the policy, the build log
+  shows a warning and the build result is not affected. Not used with <code>asyncScan</code> (fire-and-forget).
+  </p>
+</div>
