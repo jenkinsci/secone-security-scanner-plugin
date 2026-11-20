@@ -144,6 +144,16 @@ Sec1 API Key Credential ID. As configured in "[2. Configure a Sec1 API Token Cre
 
 Git repository URL to scan. If not provided, the plugin attempts to detect it from the workspace `.git/config` or the `GIT_URL` environment variable. Use this parameter when auto-detection fails (e.g., on some pipeline configurations).
 
+#### `appName` (optional, default: *repository name, plus the scanned sub-directory*)
+
+Name the scan results are reported under in Sec1. By default this is the repository path from the SCM URL (`your-org/your-repo`). When the step scans a sub-directory of the checkout in CLI mode — for example inside `dir('services/payments') { ... }` — the sub-directory is appended (`your-org/your-repo/services/payments`), so services that live in one repository are reported separately instead of replacing each other's results. Set `appName` to choose the name yourself:
+
+```groovy
+dir('services/payments') {
+    sec1Security apiCredentialsId: 'sec1-api-key', scanMode: 'cli', cliInstallation: 'sec1-cli', appName: 'payments-service'
+}
+```
+
 #### `runSca` (optional, default: `true`)
 
 Whether SCA (Software Composition Analysis) scan needs to be executed for the configured git repository.

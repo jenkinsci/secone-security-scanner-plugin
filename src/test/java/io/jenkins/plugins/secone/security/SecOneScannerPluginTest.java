@@ -593,4 +593,75 @@ public class SecOneScannerPluginTest {
 		assertTrue(url.contains("github.com/org/repo"));
 		assertNull(plugin.parseRemoteOriginUrl("[core]\n\tbare = false\n"));
 	}
+
+	@Test
+	public void testAppNameDefaultsToRepositoryAtCheckoutRoot() {
+		assertEquals("acme/shop", SecOneScannerPlugin.resolveAppName(null, "acme/shop", null));
+		assertEquals("acme/shop.git", SecOneScannerPlugin.resolveAppName(" ", "acme/shop.git", ""));
+	}
+
+	@Test
+	public void testAppNameIsDistinctPerScannedSubDirectory() {
+		String payments = SecOneScannerPlugin.resolveAppName(null, "acme/shop", "services/payments");
+		String orders = SecOneScannerPlugin.resolveAppName(null, "acme/shop.git", "services/orders");
+
+		assertEquals("acme/shop/services/payments", payments);
+		assertEquals("acme/shop/services/orders", orders);
+	}
+
+	@Test
+	public void testConfiguredAppNameWins() {
+		assertEquals("payments-service",
+				SecOneScannerPlugin.resolveAppName(" payments-service ", "acme/shop", "services/payments"));
+	}
+
+	@Test
+	public void testRelativeSubPath() {
+		assertEquals("services/payments", SecOneScannerPlugin.relativeSubPath("/ws/job", "/ws/job/services/payments/"));
+		assertEquals("services/payments",
+				SecOneScannerPlugin.relativeSubPath("C:\\ws\\job", "C:\\ws\\job\\services\\payments"));
+		assertNull(SecOneScannerPlugin.relativeSubPath("/ws/job", "/ws/job"));
+		assertNull(SecOneScannerPlugin.relativeSubPath("/ws/job", "/ws/job-2/services"));
+		assertNull(SecOneScannerPlugin.relativeSubPath(null, "/ws/job"));
+	}
+
+	@Test
+	public void testScanSubPathIsRelativeToTheCheckoutRoot() throws Exception {
+		File jobRoot = Files.createTempDirectory("sec1-job").toFile();
+		File checkout = new File(jobRoot, "src");
+		File service = new File(checkout, "services/payments");
+		assertTrue(service.mkdirs());
+		assertTrue(new File(checkout, ".git").mkdir());
+
+		// A service directory below the checkout, and the checkout itself (also when it is not the job root).
+		assertEquals("services/payments",
+				SecOneScannerPlugin.resolveScanSubPath(new FilePath(service), jobRoot.getAbsolutePath()));
+		assertNull(SecOneScannerPlugin.resolveScanSubPath(new FilePath(checkout), jobRoot.getAbsolutePath()));
+		// No checkout above the step's directory: the name stays the repository's.
+		File plain = Files.createTempDirectory("sec1-plain").toFile();
+		assertNull(SecOneScannerPlugin.resolveScanSubPath(new FilePath(plain), plain.getAbsolutePath()));
+	}
+
+	@Test
+	public void testConfiguredAppNameIsSentWithTheScanRequest() throws Exception {
+		File workspace = Files.createTempDirectory("sec1-ws").toFile();
+		prepareSastReportSetup(workspace, 200, PDF);
+		java.util.List<HttpPost> posts = new java.util.ArrayList<>();
+		when(objectFactory.createHttpPost(anyString())).thenAnswer(inv -> {
+			HttpPost post = mock(HttpPost.class);
+			posts.add(post);
+			return post;
+		});
+		plugin.setRunSca(false);
+		plugin.setScmUrl("https://github.com/acme/shop");
+		plugin.setAppName("payments-service");
+
+		assertTrue(plugin.perform(abstractBuild, launcher, buildListener));
+
+		org.mockito.ArgumentCaptor<org.apache.http.HttpEntity> body = org.mockito.ArgumentCaptor
+				.forClass(org.apache.http.HttpEntity.class);
+		verify(posts.get(0)).setEntity(body.capture());
+		String request = org.apache.http.util.EntityUtils.toString(body.getValue(), StandardCharsets.UTF_8);
+		assertTrue(request.contains("\"appName\":\"payments-service\""), request);
+	}
 }
