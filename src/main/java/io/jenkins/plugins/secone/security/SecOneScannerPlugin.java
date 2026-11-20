@@ -115,6 +115,9 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private String scmUrl;
 
+	/** Application name the scan is reported under; blank derives it from the repository. */
+	private String appName;
+
 	private String scanMode;
 
 	private String scaMode;
@@ -224,6 +227,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	@DataBoundSetter
 	public void setScmUrl(String scmUrl) {
 		this.scmUrl = scmUrl;
+	}
+
+	public String getAppName() {
+		return appName;
+	}
+
+	@DataBoundSetter
+	public void setAppName(String appName) {
+		this.appName = appName;
 	}
 
 	public String getScanMode() {
@@ -542,6 +554,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			logger.info("Issue extracting app name from url, setting it to default");
 			appName = new StringBuilder(scmUrl);
 		}
+		// Scans of the step's own directory (CLI / SBOM modes) are reported per
+		// directory, so services built from one repository do not replace each
+		// other's results. Server-side scans clone the whole repository, so the
+		// directory the step runs in does not apply to them.
+		String scanSubPath = resolveScanSubPath();
+		StringBuilder scaAppName = new StringBuilder(
+				resolveAppName(this.appName, appName.toString(), isScaSbomMode() ? scanSubPath : null));
+		StringBuilder sastAppName = new StringBuilder(
+				resolveAppName(this.appName, appName.toString(), isSastCliMode() ? scanSubPath : null));
 		String banchName = null;
 		try {
 			banchName = parseHeadBranch(readGitMetadata(".git/HEAD"));
@@ -562,7 +583,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		if (runSca) {
 			try {
-				scaResult = runScaScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
+				scaResult = runScaScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, scaAppName,
 						banchName, dashboardUrl, resolvedTag);
 			} catch (InterruptedException ex) {
 				Thread.currentThread().interrupt();
@@ -581,7 +602,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		if (runSast) {
 			try {
-				sastResult = runSastScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
+				sastResult = runSastScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, sastAppName,
 						banchName, dashboardUrl, resolvedTag);
 			} catch (InterruptedException ex) {
 				printLogs(listener.getLogger(), "Error while running sast scan. Failed to wait for result.", "r");
@@ -670,6 +691,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		listener.getLogger().println("Engine Version         "
 				+ (StringUtils.isBlank(engineVersion) ? "unknown" : engineVersion));
 		listener.getLogger().println("SCM Url                " + scmUrl);
+		listener.getLogger().println("App Name               " + appName);
 		listener.getLogger().println("Tag                    " + resolvedTag);
 		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
 
@@ -1534,7 +1556,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		}
 		if (StringUtils.isBlank(sbomFile)) {
 			// No pre-generated SBOM: let the Sec1 CLI generate and upload it.
-			return runScaSbomViaCli(fossInstanceUrl, listener, sec1ApiKey, scmUrl, branchName, resolvedTag);
+			return runScaSbomViaCli(fossInstanceUrl, listener, sec1ApiKey, scmUrl, appName, branchName, resolvedTag);
 		}
 
 		byte[] sbomBytes;
@@ -1579,6 +1601,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		listener.getLogger().println("Mode                   SBOM UPLOAD");
 		listener.getLogger().println("SBOM File              " + sbomFile);
 		listener.getLogger().println("SCM Url                " + scmUrl);
+		listener.getLogger().println("App Name               " + appName);
 		listener.getLogger().println("Tag                    " + resolvedTag);
 		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
 		if (asyncScan) {
@@ -1762,7 +1785,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	 * and applies the configured thresholds itself.
 	 */
 	private int runScaSbomViaCli(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
-			StringBuilder scmUrl, String branchName, String resolvedTag)
+			StringBuilder scmUrl, StringBuilder appName, String branchName, String resolvedTag)
 			throws AbortException, InterruptedException {
 
 		if (launcherForCli == null) {
@@ -1797,6 +1820,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		listener.getLogger().println("CLI Version            "
 				+ (StringUtils.isBlank(cliVersion) ? "unknown" : cliVersion));
 		listener.getLogger().println("SCM Url                " + scmUrl);
+		listener.getLogger().println("App Name               " + appName);
 		listener.getLogger().println("Tag                    " + resolvedTag);
 		listener.getLogger().println("Threshold              " + (applyThreshold ? "Enabled" : "Disabled"));
 		if (asyncScan) {
@@ -1824,6 +1848,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		cliEnv.put("SEC1_RESULT_FILE", resultFile.getRemote());
 		// The plugin evaluates the SCA policy itself below; an env var, so older CLIs ignore it.
 		cliEnv.put("SEC1_SKIP_POLICY", "true");
+		// Also an env var for the same reason: a CLI that predates it keeps its own naming.
+		cliEnv.put("SEC1_APP_NAME", appName.toString());
 
 		int exitCode;
 		try {
@@ -2058,6 +2084,69 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 					+ String.valueOf(apiUrl.getPort()).length() + 1;
 		}
 		return StringUtils.substring(scmUrl, subUrlLocation);
+	}
+
+	/*
+	 * Name the scan is reported under: the configured appName when set,
+	 * otherwise the repository name, followed by the scanned sub-directory when
+	 * the step runs below the checkout root.
+	 */
+	static String resolveAppName(String configuredAppName, String repoAppName, String scanSubPath) {
+		if (StringUtils.isNotBlank(configuredAppName)) {
+			return configuredAppName.trim();
+		}
+		if (StringUtils.isBlank(scanSubPath)) {
+			return repoAppName;
+		}
+		return StringUtils.removeEnd(StringUtils.removeEnd(repoAppName, "/"), ".git") + "/" + scanSubPath;
+	}
+
+	/*
+	 * Path of dir relative to root with forward slashes; null when dir is the
+	 * root itself or is not below it.
+	 */
+	static String relativeSubPath(String root, String dir) {
+		if (StringUtils.isBlank(root) || StringUtils.isBlank(dir)) {
+			return null;
+		}
+		String normalizedRoot = StringUtils.stripEnd(root.replace('\\', '/'), "/");
+		String normalizedDir = StringUtils.stripEnd(dir.replace('\\', '/'), "/");
+		if (!normalizedDir.startsWith(normalizedRoot + "/")) {
+			return null;
+		}
+		return normalizedDir.substring(normalizedRoot.length() + 1);
+	}
+
+	/*
+	 * Directory the step runs in, relative to the checkout root (the nearest
+	 * parent holding .git, searched up to the job workspace). Null when the
+	 * step runs at the checkout root or no checkout is found.
+	 */
+	private String resolveScanSubPath() {
+		return resolveScanSubPath(workspaceForCli, envForCli == null ? null : envForCli.get("WORKSPACE"));
+	}
+
+	static String resolveScanSubPath(FilePath workspace, String jobRoot) {
+		if (workspace == null) {
+			return null;
+		}
+		try {
+			FilePath dir = workspace;
+			for (int depth = 0; dir != null && depth < 10; depth++) {
+				if (dir.child(".git").exists()) {
+					return relativeSubPath(dir.getRemote(), workspace.getRemote());
+				}
+				if (jobRoot == null || !dir.getRemote().startsWith(jobRoot) || dir.getRemote().equals(jobRoot)) {
+					break;
+				}
+				dir = dir.getParent();
+			}
+		} catch (IOException ex) {
+			logger.debug("Unable to locate the checkout root from the workspace", ex);
+		} catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		}
+		return null;
 	}
 
 	private String getGitWorkingDirectory(EnvVars env, TaskListener listener) {
