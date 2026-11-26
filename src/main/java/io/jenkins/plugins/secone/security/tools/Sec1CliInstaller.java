@@ -28,6 +28,9 @@ public class Sec1CliInstaller extends ToolInstaller {
 	private static final String INSTALLED_FROM = ".installedFrom";
 	private static final String TIMESTAMP_FILE = ".timestamp";
 	private static final long REFRESH_INTERVAL_MS = 24L * 60 * 60 * 1000; // 24 hours
+	// Published next to the binaries and replaced with every sec1-cli release.
+	private static final String CHECKSUMS_NAME = "sec1-cli-SHA256SUMS.txt";
+	private static final String CHECKSUMS_FILE = ".checksums";
 
 	@DataBoundConstructor
 	public Sec1CliInstaller(String label) {
@@ -48,7 +51,10 @@ public class Sec1CliInstaller extends ToolInstaller {
 		URL downloadUrl = new URL(DOWNLOAD_BASE_URL + platform.getDownloadFileName());
 		URL sastDownloadUrl = new URL(DOWNLOAD_BASE_URL + sastPlatform.getDownloadFileName());
 
-		if (isUpToDate(expected)) {
+		// The checksums published for the current release, read from the agent
+		// (which is where the binaries are downloaded). Null when unreachable.
+		String published = channel.call(new FetchText(new URL(DOWNLOAD_BASE_URL + CHECKSUMS_NAME)));
+		if (isUpToDate(expected, published)) {
 			return expected;
 		}
 
@@ -62,20 +68,67 @@ public class Sec1CliInstaller extends ToolInstaller {
 				new File(expected.getRemote(), sastPlatform.getInstalledFileName())));
 
 		expected.child(INSTALLED_FROM).write(downloadUrl + "\n" + sastDownloadUrl, StandardCharsets.UTF_8.name());
+		if (published != null) {
+			expected.child(CHECKSUMS_FILE).write(published, StandardCharsets.UTF_8.name());
+		} else {
+			expected.child(CHECKSUMS_FILE).delete();
+		}
 		expected.child(TIMESTAMP_FILE).write(String.valueOf(Instant.now().toEpochMilli()), StandardCharsets.UTF_8.name());
 		return expected;
 	}
 
-	private boolean isUpToDate(FilePath expected) throws IOException, InterruptedException {
+	/**
+	 * The installation is kept for 24 hours, unless a new sec1-cli release has
+	 * been published since it was downloaded: the published checksums then
+	 * differ from the ones stored with the installation. When the checksums
+	 * cannot be read, only the 24 hour rule applies.
+	 */
+	private boolean isUpToDate(FilePath expected, String published) throws IOException, InterruptedException {
 		FilePath timestamp = expected.child(TIMESTAMP_FILE);
 		if (!timestamp.exists()) {
 			return false;
+		}
+		if (published != null) {
+			FilePath checksums = expected.child(CHECKSUMS_FILE);
+			if (!sameRelease(published, checksums.exists() ? checksums.readToString() : null)) {
+				return false;
+			}
 		}
 		try {
 			long lastInstalled = Long.parseLong(timestamp.readToString().trim());
 			return (System.currentTimeMillis() - lastInstalled) < REFRESH_INTERVAL_MS;
 		} catch (NumberFormatException e) {
 			return false;
+		}
+	}
+
+	/** Whether the installed checksums are those of the published release. */
+	static boolean sameRelease(String published, String installed) {
+		return installed != null && published.trim().equals(installed.trim());
+	}
+
+	/** Reads a small text file over HTTP on the agent; null when it cannot be read. */
+	private static class FetchText extends MasterToSlaveCallable<String, IOException> {
+		private static final long serialVersionUID = 1L;
+		private final URL url;
+
+		FetchText(URL url) {
+			this.url = url;
+		}
+
+		@Override
+		public String call() {
+			try {
+				java.net.URLConnection connection = url.openConnection();
+				connection.setConnectTimeout(10_000);
+				connection.setReadTimeout(10_000);
+				try (java.io.InputStream in = connection.getInputStream()) {
+					String text = org.apache.commons.io.IOUtils.toString(in, StandardCharsets.UTF_8);
+					return text.trim().isEmpty() ? null : text;
+				}
+			} catch (IOException e) {
+				return null;
+			}
 		}
 	}
 
