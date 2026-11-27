@@ -47,6 +47,9 @@
 	<f:entry title="Application Name" field="appName">
 		<f:textbox default="" />
 	</f:entry>
+	<f:entry title="Sec1 Team Id" field="teamId">
+		<f:textbox default="" checkMethod="post" />
+	</f:entry>
 	<f:entry title="Scan Tag" field="scanTag">
 		<f:textbox default="" />
 	</f:entry>

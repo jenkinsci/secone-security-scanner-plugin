@@ -154,6 +154,16 @@ dir('services/payments') {
 }
 ```
 
+#### `teamId` (optional, default: *the API key owner's team*)
+
+File this scan under one of your sub-teams. A scan normally belongs to the team of the user who owns the API key, so when every pipeline shares one key of the parent team, all scans land in the parent team and sub-teams do not see their own. Set `teamId` to the id of the sub-team the scan is for (copy it from **Settings → Team** in Sec1): the members of that sub-team and of the parent team see the scan, other sub-teams do not.
+
+```groovy
+sec1Security apiCredentialsId: 'sec1-api-key', teamId: '<team id>'
+```
+
+The team must be the API key owner's own team or one of its sub-teams; otherwise the scan is refused and the step fails with the reason. Leave it empty to keep filing scans under the API key owner's team. When `teamId` is not set, the `SEC1_TEAM_ID` environment variable is used if present, so an `environment { }` block can set the team once for a whole pipeline. Applies to SCA and SAST scans.
+
 #### `runSca` (optional, default: `true`)
 
 Whether SCA (Software Composition Analysis) scan needs to be executed for the configured git repository.

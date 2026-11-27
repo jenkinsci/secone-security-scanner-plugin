@@ -34,6 +34,7 @@ import org.json.JSONObject;
 import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
+import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.verb.POST;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,6 +60,7 @@ import hudson.model.TaskListener;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.Builder;
 import hudson.util.ArgumentListBuilder;
+import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
 import io.jenkins.plugins.secone.security.object.factory.ObjectFactory;
 import io.jenkins.plugins.secone.security.pojo.Threshold;
@@ -100,6 +102,13 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	private static final String API_KEY_HEADER = "sec1-api-key";
 	private static final String SCA_POLICY_EVALUATE_URL = "/foss/sca/policy/evaluate";
 
+	static final String TEAM_ID_ENV = "SEC1_TEAM_ID";
+
+	static final String TEAM_ID_HEADER = "sec1-team-id";
+
+	private static final java.util.regex.Pattern TEAM_ID_PATTERN =
+			java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,99}");
+
 	private String apiCredentialsId;
 	private boolean applyThreshold;
 
@@ -117,6 +126,9 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	/** Application name the scan is reported under; blank derives it from the repository. */
 	private String appName;
+
+	/** Team the scan is filed under; blank files it under the API key owner's team. */
+	private String teamId;
 
 	private String scanMode;
 
@@ -147,6 +159,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	private transient Launcher launcherForCli;
 	private transient EnvVars envForCli;
 	private transient Run<?, ?> runForReport;
+	private transient String teamIdForScan;
 
 	private ObjectFactory objectFactory;
 
@@ -236,6 +249,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	@DataBoundSetter
 	public void setAppName(String appName) {
 		this.appName = appName;
+	}
+
+	public String getTeamId() {
+		return teamId;
+	}
+
+	@DataBoundSetter
+	public void setTeamId(String teamId) {
+		this.teamId = StringUtils.trimToNull(teamId);
 	}
 
 	public String getScanMode() {
@@ -513,6 +535,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			throw new AbortException(getErrorMessageInAnsi("API Key not configured. Please check your configuration."));
 		}
 
+		this.teamIdForScan = resolveTeamId(teamId, envForCli == null ? null : envForCli.get(TEAM_ID_ENV));
+		if (teamIdForScan != null) {
+			printLogs(listener.getLogger(), "Scans will be filed under team " + teamIdForScan + ".", "g");
+		}
+
 		StringBuilder fossInstanceUrl = new StringBuilder();
 		StringBuilder scmUrl = new StringBuilder();
 
@@ -708,6 +735,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		EnvVars cliEnv = new EnvVars(envForCli == null ? new EnvVars() : envForCli);
 		cliEnv.put("SAST_UPLOAD_API_KEY", sec1ApiKey);
+		putTeamId(cliEnv);
 
 		ByteArrayOutputStream stdoutBuf = new ByteArrayOutputStream();
 		int exitCode;
@@ -946,9 +974,9 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
 			}
 		} else {
-			logger.error("SAST scan submission failed: {}", triggerFailure(triggerResponse, scanUrl));
+			logger.error("SAST scan submission failed: {}", submissionFailure(triggerResponse, scanUrl));
 			throw new AbortException(getErrorMessageInAnsi(
-					"SAST scan submission failed: " + triggerFailure(triggerResponse, scanUrl) + " Failing the build."));
+					"SAST scan submission failed: " + submissionFailure(triggerResponse, scanUrl) + " Failing the build."));
 		}
 
 		printSastEndMessage(listener);
@@ -1245,6 +1273,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(apiUrl))) {
 			HttpPost httpPost = objectFactory.createHttpPost(apiUrl);
 			httpPost.addHeader(API_KEY_HEADER, sec1ApiKey);
+			addTeamHeader(httpPost);
 			httpPost.setHeader("Content-Type", "application/json");
 			httpPost.setHeader("Accept", "application/json");
 			httpPost.setEntity(new StringEntity(inputParamsMap.toString(), StandardCharsets.UTF_8));
@@ -1500,9 +1529,9 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 				throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
 			}
 		} else {
-			logger.error("SCA scan submission failed: {}", triggerFailure(triggerResponse, scanUrl));
+			logger.error("SCA scan submission failed: {}", submissionFailure(triggerResponse, scanUrl));
 			throw new AbortException(getErrorMessageInAnsi(
-					"SCA scan submission failed: " + triggerFailure(triggerResponse, scanUrl) + " Failing the build."));
+					"SCA scan submission failed: " + submissionFailure(triggerResponse, scanUrl) + " Failing the build."));
 		}
 		printScaEndMessage(listener);
 		return result;
@@ -1631,6 +1660,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(scanUrl))) {
 			HttpPost post = objectFactory.createHttpPost(scanUrl);
 			post.setHeader(API_KEY_HEADER, sec1ApiKey);
+			addTeamHeader(post);
 			post.setHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
 			post.setHeader("Accept", "application/json");
 			post.setEntity(new ByteArrayEntity(body));
@@ -1641,8 +1671,10 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 						? EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8)
 						: "";
 				if (statusCode != 200) {
-					throw new AbortException(getErrorMessageInAnsi(
-							"SBOM scan failed with HTTP " + statusCode + ". " + content));
+					String refusal = teamRefusal(teamIdForScan, statusCode, content);
+					throw new AbortException(getErrorMessageInAnsi(refusal != null
+							? "SBOM scan refused: " + refusal + " Check the teamId setting."
+							: "SBOM scan failed with HTTP " + statusCode + ". " + content));
 				}
 				JSONObject responseJson = new JSONObject(content);
 				listener.getLogger().println("-------------------- Sec1 SCA Scan Result --------------------");
@@ -1850,6 +1882,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		cliEnv.put("SEC1_SKIP_POLICY", "true");
 		// Also an env var for the same reason: a CLI that predates it keeps its own naming.
 		cliEnv.put("SEC1_APP_NAME", appName.toString());
+		putTeamId(cliEnv);
 
 		int exitCode;
 		try {
@@ -1937,6 +1970,62 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 					+ " current API key." + (detail.isEmpty() ? "" : " Response: " + detail);
 		}
 		return "HTTP " + response.statusCode + (detail.isEmpty() ? "." : ": " + detail);
+	}
+
+	/*
+	 * The team a scan is filed under: the step's teamId, otherwise SEC1_TEAM_ID
+	 * from the environment; null when neither is set, which files the scan
+	 * under the API key owner's team. The value is sent as an HTTP header, so
+	 * anything that is not an id is refused before a scan starts.
+	 */
+	static String resolveTeamId(String configured, String fromEnvironment) throws AbortException {
+		String value = StringUtils.trimToNull(StringUtils.defaultIfBlank(configured, fromEnvironment));
+		if (value == null) {
+			return null;
+		}
+		if (!isTeamId(value)) {
+			throw new AbortException("teamId is not a Sec1 team id. Copy the id of the team from Settings > Team in"
+					+ " Sec1: letters, digits, dot, underscore and hyphen, up to 100 characters.");
+		}
+		return value;
+	}
+
+	static boolean isTeamId(String value) {
+		return value != null && TEAM_ID_PATTERN.matcher(value).matches();
+	}
+
+	/*
+	 * The server's reason when it refused to file a scan under the requested
+	 * team (HTTP 403 with an "error" message); null for any other response.
+	 */
+	static String teamRefusal(String teamId, int statusCode, String body) {
+		if (teamId == null || statusCode != 403 || StringUtils.isBlank(body)) {
+			return null;
+		}
+		try {
+			String error = StringUtils.normalizeSpace(new JSONObject(body).optString("error"));
+			return StringUtils.isBlank(error) ? null : StringUtils.abbreviate(error, 300);
+		} catch (RuntimeException notJson) {
+			return null;
+		}
+	}
+
+	private String submissionFailure(ScanTriggerResponse response, String scanUrl) {
+		String refusal = response == null ? null : teamRefusal(teamIdForScan, response.statusCode, response.body);
+		return refusal != null ? refusal + " Check the teamId setting." : triggerFailure(response, scanUrl);
+	}
+
+	private void addTeamHeader(HttpPost post) {
+		if (teamIdForScan != null) {
+			post.setHeader(TEAM_ID_HEADER, teamIdForScan);
+		}
+	}
+
+	/* An environment variable, not an argument, so a CLI that predates it ignores it. */
+	private void putTeamId(EnvVars cliEnv) {
+		if (teamIdForScan != null) {
+			cliEnv.put(TEAM_ID_ENV, teamIdForScan);
+		}
 	}
 
 	static final class ScanTriggerResponse {
@@ -2063,6 +2152,18 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		}
 
 		@POST
+		public FormValidation doCheckTeamId(@AncestorInPath Item item, @QueryParameter String value) {
+			if (item == null ? !Jenkins.get().hasPermission(Jenkins.ADMINISTER)
+					: !item.hasPermission(Item.CONFIGURE)) {
+				return FormValidation.ok();
+			}
+			if (StringUtils.isBlank(value) || isTeamId(value.trim())) {
+				return FormValidation.ok();
+			}
+			return FormValidation.error("Not a team id. Copy the id of the team from Settings > Team in Sec1.");
+		}
+
+		@POST
 		public ListBoxModel doFillScaModeItems(@AncestorInPath Item item) {
 			ListBoxModel items = new ListBoxModel();
 			if (item == null ? !Jenkins.get().hasPermission(Jenkins.ADMINISTER)
@@ -2159,6 +2260,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			httpPost.setHeader("Content-Type", "application/json");
 			httpPost.setHeader("Accept", "application/json");
 			httpPost.setHeader(API_KEY_HEADER, sec1ApiKey);
+			addTeamHeader(httpPost);
 			httpPost.setEntity(new StringEntity(inputParamsMap, StandardCharsets.UTF_8));
 
 			try (CloseableHttpResponse response = client.execute(httpPost)) {

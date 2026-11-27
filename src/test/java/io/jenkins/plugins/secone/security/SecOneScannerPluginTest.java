@@ -595,6 +595,72 @@ public class SecOneScannerPluginTest {
 	}
 
 	@Test
+	public void testTeamIdComesFromTheStepThenTheEnvironment() throws Exception {
+		assertNull(SecOneScannerPlugin.resolveTeamId(null, null));
+		assertNull(SecOneScannerPlugin.resolveTeamId(" ", ""));
+		assertEquals("team-a", SecOneScannerPlugin.resolveTeamId(" team-a ", "team-b"));
+		assertEquals("9aa25a98-1f0e-4c1b-9d3e-000000000001",
+				SecOneScannerPlugin.resolveTeamId(null, "9aa25a98-1f0e-4c1b-9d3e-000000000001"));
+	}
+
+	@Test
+	public void testTeamIdThatIsNotAnIdIsRefused() {
+		assertThrows(AbortException.class, () -> SecOneScannerPlugin.resolveTeamId("Payments Team", null));
+		assertThrows(AbortException.class, () -> SecOneScannerPlugin.resolveTeamId("a\r\nx-evil: 1", null));
+		assertThrows(AbortException.class, () -> SecOneScannerPlugin.resolveTeamId(null, "-leading-hyphen"));
+		assertThrows(AbortException.class, () -> SecOneScannerPlugin.resolveTeamId("a".repeat(101), null));
+		assertTrue(SecOneScannerPlugin.isTeamId("a".repeat(100)));
+		assertTrue(SecOneScannerPlugin.isTeamId("team_1.eu-west"));
+	}
+
+	@Test
+	public void testTeamRefusalIsTheServersMessageOnA403() {
+		String body = "{\"error\": \"Team t-9 (sec1-team-id) is not your team or one of its sub-teams, so the scan cannot be filed under it.\"}";
+		assertEquals("Team t-9 (sec1-team-id) is not your team or one of its sub-teams, so the scan cannot be filed under it.",
+				SecOneScannerPlugin.teamRefusal("t-9", 403, body));
+		// No team was sent, another status, or a body without the message: not a team refusal.
+		assertNull(SecOneScannerPlugin.teamRefusal(null, 403, body));
+		assertNull(SecOneScannerPlugin.teamRefusal("t-9", 401, body));
+		assertNull(SecOneScannerPlugin.teamRefusal("t-9", 403, "Forbidden"));
+		assertNull(SecOneScannerPlugin.teamRefusal("t-9", 403, "{}"));
+	}
+
+	@Test
+	public void testScanSendsTheTeamIdHeaderWhenSet() throws Exception {
+		plugin.setRunSast(false);
+		plugin.setTeamId(" team-a ");
+		prepareScaScanSetup();
+		assertEquals(true, plugin.perform(abstractBuild, launcher, buildListener));
+		verify(objectFactory.createHttpPost("any")).setHeader(SecOneScannerPlugin.TEAM_ID_HEADER, "team-a");
+	}
+
+	@Test
+	public void testScanSendsNoTeamIdHeaderWhenNotSet() throws Exception {
+		plugin.setRunSast(false);
+		prepareScaScanSetup();
+		assertEquals(true, plugin.perform(abstractBuild, launcher, buildListener));
+		verify(objectFactory.createHttpPost("any"), never()).setHeader(eq(SecOneScannerPlugin.TEAM_ID_HEADER), anyString());
+	}
+
+	@Test
+	public void testScanUsesTeamIdFromTheEnvironmentWhenTheStepHasNone() throws Exception {
+		plugin.setRunSast(false);
+		prepareScaScanSetup();
+		when(envVars.get(SecOneScannerPlugin.TEAM_ID_ENV)).thenReturn("team-env");
+		assertEquals(true, plugin.perform(abstractBuild, launcher, buildListener));
+		verify(objectFactory.createHttpPost("any")).setHeader(SecOneScannerPlugin.TEAM_ID_HEADER, "team-env");
+	}
+
+	@Test
+	public void testScanWithAnInvalidTeamIdFailsBeforeAnyRequest() throws Exception {
+		plugin.setRunSast(false);
+		plugin.setTeamId("not an id");
+		prepareScaScanSetup();
+		assertThrows(AbortException.class, () -> plugin.perform(abstractBuild, launcher, buildListener));
+		verify(objectFactory, never()).createHttpClient(any(URI.class));
+	}
+
+	@Test
 	public void testAppNameDefaultsToRepositoryAtCheckoutRoot() {
 		assertEquals("acme/shop", SecOneScannerPlugin.resolveAppName(null, "acme/shop", null));
 		assertEquals("acme/shop.git", SecOneScannerPlugin.resolveAppName(" ", "acme/shop.git", ""));
